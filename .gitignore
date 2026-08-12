@@ -1,0 +1,32 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Env
+.env
+*.env.local
+
+# Logs
+*.log
+logs/
+
+# Tauri
+warden-tauri/src-tauri/target/
+warden-tauri/dist/
+warden-tauri/node_modules/
+
+# Secrets
+*.pem
+*.key
+*.pfx
+config/secrets.*

@@ -1,0 +1,121 @@
+[package]
+name = "warden"
+version = "0.1.0"
+edition = "2021"
+description = "Warden VPN - Multi-protocol VPN client with OPsec"
+authors = ["Fakeonomics"]
+license = "MIT"
+repository = "https://github.com/Fakeonomics/Warden"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2.0", features = ["macros", "cli", "updater", "shell-execute", "fs-all", "dialog-all", "http-all", "notification", "global-shortcut", "tray-icon", "clipboard-manager"] }
+tauri-plugin-store = "2.0"
+tauri-plugin-opener = "2.0"
+tauri-plugin-notification = "2.0"
+tauri-plugin-log = "2.0"
+tauri-plugin-shell = "2.0"
+tauri-plugin-fs = "2.0"
+tauri-plugin-dialog = "2.0"
+tauri-plugin-clipboard-manager = "2.0"
+tauri-plugin-global-shortcut = "2.0"
+tauri-plugin-tray-icon = "2.0"
+tauri-plugin-positioner = "2.0"
+tauri-plugin-updater = "2.0"
+
+# Async runtime
+tokio = { version = "1.40", features = ["full", "rt-multi-thread", "macros", "sync", "time", "net", "io-std", "process", "signal", "fs"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_wasm_bindgen = "0.6"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking", "multipart", "stream", "cookies", "gzip", "brotli", "deflate"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "modern", "extra_check", "functions", "vtab", "blob"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "offline", "macros"] }
+
+# Cryptography
+ring = "0.17"
+rustls = { version = "0.23", features = ["std", "logging", "dangerous_configuration", "tls12", "quic"] }
+rustls-pemfile = "1.0"
+rcgen = "0.13"
+x25519-dalek = "2.0"
+ed25519-dalek = "2.0"
+chacha20poly1305 = "0.10"
+aes-gcm = "0.10"
+blake3 = "1.5"
+hkdf = "0.13"
+argon2 = "0.5"
+zeroize = "1.7"
+subtle = "2.6"
+rand = { version = "0.8", features = ["std", "small_rng"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+# VPN protocols - using existing crates
+boringtun = { version = "0.5", features = ["tokio"] }
+shadowsocks = { version = "0.8", features = ["aead-2022", "stream-cipher", "tokio"] }
+shadowsocks-crypto = "0.3"
+quinn = "0.11"
+quinn-proto = "0.11"
+h2 = "0.4"
+wg-ctrl = "0.5"
+
+# System
+socket2 = "0.5"
+libc = "0.2"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Threading", "Win32_Security", "Win32_NetworkManagement_Ndis", "Win32_System_Registry", "Win32_UI_Shell"] }
+nix = { version = "0.28", features = ["process", "sys", "socket", "unistd"] }
+
+# Logging & Metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
+tracing-appender = "0.6"
+metrics = "0.22"
+metrics-exporter-prometheus = "0.13"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+once_cell = "1.2"
+dashmap = "6.1"
+crossbeam = "0.8"
+parking_lot = "0.12"
+arc-swap = "1.6"
+smallvec = "1.15"
+indexmap = "2.1"
+slab = "0.4"
+uuid = { version = "1.8", features = ["v4", "v7", "serde", "fast-rng"] }
+chrono = { version = "0.4", features = ["serde", "clock", "tz"] }
+url = "2.5"
+base64 = { version = "0.22", features = ["std"] }
+data-encoding = "2.6"
+mime = "0.3"
+walkdir = "2.4"
+notify = { version = "6.1", features = ["tokio"] }
+signal-hook = { version = "0.3", features = ["tokio"] }
+signal-hook-tokio = "0.3"
+
+# Config
+figment = { version = "0.10", features = ["toml", "env", "yaml"] }
+config-watcher = "0.5"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "wrap_help", "help", "usage", "string"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
+debug = true
