@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["warden-core", "warden-app"]
+members = ["warden-core", "warden-app", "warden-tauri/src-tauri"]
+default-members = ["warden-app"]
+exclude = ["warden-tauri/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,13 +27,13 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"
 ring = "0.17"
-boringtun = { version = "0.5", features = ["tokio"] }
-shadowsocks = { version = "0.8", features = ["aead-2022", "tokio"] }
+shadowsocks = { version = "1.24", features = ["aead-2022", "tokio"] }
+boringtun = { version = "0.6", features = ["tokio"] }
 quinn = "0.11"
 async-trait = "0.1"
 bytes = "1.12"
 toml = "0.8"
-clap = { version = "4.5", features = ["derive", "env"] }
+litcrypt2 = "0.1"
 
 [profile.release]
 lto = "fat"

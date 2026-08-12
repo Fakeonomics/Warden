@@ -21,10 +21,13 @@ chrono = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 ring = { workspace = true }
-boringtun = { workspace = true }
 shadowsocks = { workspace = true }
+boringtun = { workspace = true }
 quinn = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 toml = { workspace = true }
-clap = { workspace = true }
+litcrypt2 = { workspace = true }
+
+[build-dependencies]
+litcrypt2 = { workspace = true }
