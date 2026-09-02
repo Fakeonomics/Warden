@@ -1,14 +1,19 @@
 use crate::{config::ApiConfig, error::WardenError};
-use litcrypt2::lc;
-use reqwest::{Client, ClientBuilder, header::{HeaderMap, HeaderValue, USER_AGENT}};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, USER_AGENT},
+    Client, ClientBuilder,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info};
 use url::Url;
+use uuid::Uuid;
 
-lc!();
+fn uuid_namespace() -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"warden.fakeonomics.online")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -37,7 +42,7 @@ pub struct ApiClient {
 struct CachedSub {
     token: String,
     configs: Vec<ServerConfig>,
-    fetched_at: chrono::DateTime<chrono::Utc>,
+    _fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl ApiClient {
@@ -45,19 +50,25 @@ impl ApiClient {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_str(&config.user_agent)?);
         if let Some(t) = &config.auth_token {
-            headers.insert(lc!("Authorization"), HeaderValue::from_str(&format!("Bearer {}", t))?);
+            headers.insert(
+                "Authorization",
+                HeaderValue::from_str(&format!("Bearer {}", t))?,
+            );
         }
-        if let Some(hwid) = std::env::var("WARDEN_HWID").ok().filter(|s| !s.is_empty()) {
-            headers.insert(lc!("X-HWID"), HeaderValue::from_str(&hwid)?);
+        if std::env::var("WARDEN_HWID_OPT_IN").ok().as_deref() == Some("1") {
+            if let Some(hwid) = std::env::var("WARDEN_HWID").ok().filter(|s| !s.is_empty()) {
+                headers.insert("X-HWID", HeaderValue::from_str(&hwid)?);
+            }
         }
-        // связать→ разбивает реверс-инжинирщику совсем не очевидно ("telemetry bridge")
         let http = ClientBuilder::new()
             .default_headers(headers)
             .timeout(Duration::from_secs(config.timeout_seconds))
-            .gzip(true).brotli(true).deflate(true).build()?;
-        // скраб на детерминированные поля для непредсказуемости
+            .gzip(true)
+            .brotli(true)
+            .no_deflate()
+            .build()?;
         if config.subscription_endpoint.is_empty() {
-            config.subscription_endpoint = lc!("/sub/{token}/all.txt").to_string();
+            config.subscription_endpoint = "/sub/{token}/all.txt".to_string();
         }
         Ok(Self {
             http,
@@ -69,7 +80,11 @@ impl ApiClient {
     }
 
     pub async fn fetch_subscription(&self, token: &str) -> Result<Vec<ServerConfig>, WardenError> {
-        let _p = self.limiter.acquire().await?;
+        let _p = self
+            .limiter
+            .acquire()
+            .await
+            .map_err(|e| WardenError::AcquireError(e.to_string()))?;
         self.rate_limit().await;
 
         let endpoint = self.config.subscription_endpoint.replace("{token}", token);
@@ -84,22 +99,32 @@ impl ApiClient {
 
         let text = resp.text().await?;
         let configs = self.parse_subscription(&text)?;
-        let cached = CachedSub { token: token.into(), configs: configs.clone(), fetched_at: chrono::Utc::now() };
+        let cached = CachedSub {
+            token: token.into(),
+            configs: configs.clone(),
+            _fetched_at: chrono::Utc::now(),
+        };
         *self.cache.write().await = Some(cached);
         info!("fetched {} alive configs", configs.len());
         Ok(configs)
     }
 
     pub async fn cached(&self, token: &str) -> Option<Vec<ServerConfig>> {
-        self.cache.read().await.as_ref()
-            .filter(|c| c.token == token).map(|c| c.configs.clone())
+        self.cache
+            .read()
+            .await
+            .as_ref()
+            .filter(|c| c.token == token)
+            .map(|c| c.configs.clone())
     }
 
     async fn rate_limit(&self) {
         let mut last = self.last_req.write().await;
         let elapsed = last.elapsed();
         let min = Duration::from_millis(100);
-        if elapsed < min { tokio::time::sleep(min - elapsed).await; }
+        if elapsed < min {
+            tokio::time::sleep(min - elapsed).await;
+        }
         *last = Instant::now();
     }
 
@@ -107,19 +132,26 @@ impl ApiClient {
         let mut out = Vec::new();
         for line in text.lines() {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             if let Ok(url) = Url::parse(line) {
                 let protocol = url.scheme().to_lowercase();
                 let host = url.host_str().unwrap_or("").to_string();
                 let port = url.port().unwrap_or(default_port(&protocol)) as i32;
-                let region = url.fragment()
-                    .and_then(|f| f.split(|c: char| !c.is_alphabetic()).find(|s| s.len() == 2))
-                    .map(|s| s.to_uppercase());
+                let region = parse_region(&url);
                 let id = hash_id(line);
                 out.push(ServerConfig {
-                    id, config_line: line.into(), protocol, host, port,
-                    is_alive: true, source: None, health_score: Some(0.5),
-                    response_time_ms: None, region,
+                    id,
+                    config_line: line.into(),
+                    protocol,
+                    host,
+                    port,
+                    is_alive: true,
+                    source: None,
+                    health_score: Some(0.5),
+                    response_time_ms: None,
+                    region,
                 });
             }
         }
@@ -129,17 +161,39 @@ impl ApiClient {
 
 fn default_port(scheme: &str) -> u16 {
     match scheme {
-        s if s == "https" => 443,
-        s if s == "http" => 80,
-        s if s == "ss" => 8388,
+        "https" => 443,
+        "http" => 80,
+        "ss" => 8388,
         _ => 443,
     }
 }
 
+fn parse_region(url: &Url) -> Option<String> {
+    if let Some(frag) = url.fragment() {
+        for pair in frag.split('&') {
+            if let Some(rest) = pair.strip_prefix("region=") {
+                let val = rest
+                    .trim()
+                    .chars()
+                    .take(2)
+                    .collect::<String>()
+                    .to_uppercase();
+                if val.len() == 2 && val.chars().all(|c| c.is_ascii_alphabetic()) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    for seg in url.path().split('/') {
+        if seg.len() == 2 && seg.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Some(seg.to_uppercase());
+        }
+    }
+    None
+}
+
 fn hash_id(s: &str) -> i64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
+    let uuid = Uuid::new_v5(&uuid_namespace(), s.as_bytes());
+    let (lo, hi) = uuid.as_u64_pair();
+    ((lo ^ hi) & 0x7FFF_FFFF_FFFF_FFFF) as i64
 }

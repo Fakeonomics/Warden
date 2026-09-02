@@ -1,0 +1,142 @@
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+warning: field `timeout` is never read
+  --> warden-core/src/discovery.rs:54:5
+   |
+51 | pub struct DiscoveryEngine {
+   |            --------------- field in this struct
+...
+54 |     timeout: Duration,
+   |     ^^^^^^^
+   |
+   = note: `DiscoveryEngine` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no method named `connect` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:540:29
+    |
+540 |         let result = warden.connect("test-token").await;
+    |                             ^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+540 |         let result = warden.await.connect("test-token").await;
+    |                             ++++++
+
+error[E0599]: no method named `disconnect` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:575:24
+    |
+575 |         let _ = warden.disconnect().await;
+    |                        ^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+575 |         let _ = warden.await.disconnect().await;
+    |                        ++++++
+
+error[E0599]: no method named `connect_from_configs` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:583:14
+    |
+582 |           let err = warden
+    |  ___________________-
+583 | |             .connect_from_configs(Vec::new(), &WardenConfig::default())
+    | |             -^^^^^^^^^^^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    | |_____________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+583 |             .await.connect_from_configs(Vec::new(), &WardenConfig::default())
+    |              ++++++
+
+error[E0599]: no method named `connect_from_configs` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:598:14
+    |
+597 |           let err2 = warden
+    |  ____________________-
+598 | |             .connect_from_configs(vec![d], &WardenConfig::default())
+    | |             -^^^^^^^^^^^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    | |_____________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+598 |             .await.connect_from_configs(vec![d], &WardenConfig::default())
+    |              ++++++
+
+error[E0599]: no method named `connect_from_configs` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:607:14
+    |
+606 |           let err3 = warden
+    |  ____________________-
+607 | |             .connect_from_configs(bad, &WardenConfig::default())
+    | |             -^^^^^^^^^^^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    | |_____________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+607 |             .await.connect_from_configs(bad, &WardenConfig::default())
+    |              ++++++
+
+error[E0599]: no method named `connect` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:628:26
+    |
+628 |             match warden.connect("stress-token").await {
+    |                          ^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+628 |             match warden.await.connect("stress-token").await {
+    |                          ++++++
+
+warning: `warden-core` (lib) generated 1 warning
+error[E0599]: no method named `disconnect` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:632:28
+    |
+632 |             let _ = warden.disconnect().await;
+    |                            ^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+632 |             let _ = warden.await.disconnect().await;
+    |                            ++++++
+
+error[E0599]: no method named `status_all` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:650:24
+    |
+650 |         assert!(warden.status_all().await.is_empty());
+    |                        ^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+650 |         assert!(warden.await.status_all().await.is_empty());
+    |                        ++++++
+
+error[E0599]: no method named `connect_from_configs` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:663:14
+    |
+662 |           let result = warden
+    |  ______________________-
+663 | |             .connect_from_configs(mixed, &WardenConfig::default())
+    | |             -^^^^^^^^^^^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    | |_____________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+663 |             .await.connect_from_configs(mixed, &WardenConfig::default())
+    |              ++++++
+
+error[E0599]: no method named `disconnect` found for opaque type `impl std::future::Future<Output = Warden>` in the current scope
+   --> warden-core/src/lib.rs:686:24
+    |
+686 |         let _ = warden.disconnect().await;
+    |                        ^^^^^^^^^^ method not found in `impl std::future::Future<Output = Warden>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+686 |         let _ = warden.await.disconnect().await;
+    |                        ++++++
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `warden-core` (lib test) due to 10 previous errors

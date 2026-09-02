@@ -1,0 +1,23 @@
+=== AUTOTUNE LOG Вт 01 сен 2026 11:56:45 UTC ===
+
+--- Detected HardwareProfile ---
+cpus=12
+MemTotal:       32468820 kB
+
+--- cargo build -p warden-core -p warden-app ---
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+   Compiling warden-app v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.16s
+
+--- cargo test -p warden-core ---
+test calib_tests::t_tune_adapts ... ok
+test calib_tests::t_tune_defaults_safe ... ok
+test calib_tests::t_detect_cpus ... ok
+test calib_tests::t_apply_does_not_break ... ok
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.89s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- cargo run -p warden-app --quiet -- self-test ---
+[2m2026-09-01T11:56:58.616335Z[0m [32m INFO[0m [2mwarden_core[0m[2m:[0m warden init mode=Civilian api=https://fakeonomics.online
+ternary=true decision=["test-server"] opsec_persist=true tunnel_proof=Some((32, 32, 32, 32))
+SERVICE OK

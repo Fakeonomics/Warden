@@ -1,0 +1,4 @@
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+   Compiling warden-app v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.93s
+PASS: cargo build -p warden-core -p warden-app succeeded (exit 0). No edits needed.

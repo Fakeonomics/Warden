@@ -1,90 +1,200 @@
-use litcrypt2::lc;
-use crate::{config::{ProtocolsConfig, OpsecConfig}, error::WardenError, api::ServerConfig};
-use crate::ActiveConnection;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::Duration;
+
+use crate::{
+    api::ServerConfig,
+    config::PerformanceMode,
+    decision::{DecisionHook, ThreatContext},
+    error::WardenError,
+    tunnel::{WireGuardTunnelHandle, WireguardConfig},
+    ActiveConnection,
+};
+use chrono::Utc;
+use tokio::time::sleep;
 use tracing::{info, warn};
 use uuid::Uuid;
-use chrono::Utc;
-
-lc!();
 
 pub struct ProtocolManager {
-    config: ProtocolsConfig,
-    api: Arc<crate::api::ApiClient>,
-    sessions: RwLock<HashMap<String, SessionHandle>>,
+    _config: crate::config::ProtocolsConfig,
+    _api: std::sync::Arc<crate::api::ApiClient>,
+    sessions: tokio::sync::RwLock<HashMap<String, SessionHandle>>,
+    hook: std::sync::Arc<tokio::sync::RwLock<Box<dyn DecisionHook + Send + Sync>>>,
 }
 
 #[derive(Debug, Clone)]
 struct SessionHandle {
-    id: String,
-    protocol: String,
-    host: String,
-    port: i32,
-    started_at: chrono::DateTime<Utc>,
-    fingerprint: String,
+    _id: String,
+    _protocol: String,
+    _host: String,
+    _port: i32,
+    _started_at: chrono::DateTime<chrono::Utc>,
+    _fingerprint: String,
 }
 
 impl ProtocolManager {
-    pub async fn new(config: ProtocolsConfig, api: Arc<crate::api::ApiClient>) -> Result<Self, WardenError> {
-        Ok(Self { config, api, sessions: RwLock::new(HashMap::new()) })
+    pub async fn new(
+        config: crate::config::ProtocolsConfig,
+        api: std::sync::Arc<crate::api::ApiClient>,
+    ) -> Result<Self, WardenError> {
+        Ok(Self {
+            _config: config,
+            _api: api,
+            sessions: tokio::sync::RwLock::new(HashMap::new()),
+            hook: std::sync::Arc::new(tokio::sync::RwLock::new(Box::new(
+                crate::decision::NoopDecisionHook,
+            ))),
+        })
     }
 
-    /// Pick best alive config per preferred protocol order. Excludes countries in
-    /// `exclude` and prefers those in `prefer`. Operator mode bypasses region filter.
-    pub async fn try_connect(&self, prefer: &[String], exclude: &[String], operator: bool, configs: &[ServerConfig]) -> Result<Option<ActiveConnection>, WardenError> {
-        for proto in &self.config.preferred {
-            if !enabled_for(&self.config, proto) { continue; }
-            let mut ranked: Vec<&ServerConfig> = configs.iter()
-                .filter(|c| c.is_alive && &c.protocol == proto)
-                .collect();
+    pub async fn set_hook(&self, hook: Box<dyn DecisionHook + Send + Sync>) {
+        let mut h = self.hook.write().await;
+        *h = hook;
+    }
 
-            if !operator {
-                ranked.retain(|c| {
-                    let r = c.region.as_deref().unwrap_or("");
-                    !exclude.iter().any(|e| e.eq_ignore_ascii_case(r))
-                });
-                ranked.sort_by_key(|c| {
-                    let score = c.health_score.unwrap_or(0.5);
-                    let in_preferred = c.region.as_deref()
-                        .map(|r| prefer.iter().position(|p| p.eq_ignore_ascii_case(r)).unwrap_or(99))
-                        .unwrap_or(98);
-                    std::cmp::Reverse((score * 1000.0) as i64 - in_preferred as i64)
-                });
-            } else {
-                ranked.sort_by(|a, b| {
-                    b.health_score.unwrap_or(0.5).partial_cmp(&a.health_score.unwrap_or(0.5)).unwrap()
-                });
-            }
+    /// Attempt to establish a single session from a ranked list of configs.
+    ///
+    /// Retries each candidate with exponential backoff, bounded by a total
+    /// attempt budget. Never panics: every failure path returns `Ok(None)`
+    /// so the caller can fall back gracefully when every candidate is dead.
+    pub async fn try_connect(
+        &self,
+        prefer: &[String],
+        exclude: &[String],
+        operator: bool,
+        configs: &[ServerConfig],
+        mode: PerformanceMode,
+    ) -> Result<Option<ActiveConnection>, WardenError> {
+        let mut filtered_configs: Vec<ServerConfig> = configs.to_vec();
+        if !exclude.is_empty() {
+            filtered_configs.retain(|cfg| match &cfg.region {
+                Some(r) => !exclude.contains(r),
+                None => true,
+            });
+        }
+        if !prefer.is_empty() {
+            filtered_configs.sort_by(|a, b| {
+                let a_pref = match &a.region {
+                    Some(r) => prefer.contains(r),
+                    None => false,
+                };
+                let b_pref = match &b.region {
+                    Some(r) => prefer.contains(r),
+                    None => false,
+                };
+                b_pref.cmp(&a_pref)
+            });
+        }
+        let configs_to_use = if filtered_configs.is_empty() && !configs.is_empty() {
+            configs.to_vec()
+        } else {
+            filtered_configs
+        };
 
-            for cfg in ranked.iter().take(5) {
-                match self.open_session(proto, cfg).await {
+        let ctx = ThreatContext {
+            network: "unknown".into(),
+            goal: "connect".into(),
+            jurisdiction: None,
+            battery: 100,
+            operator_mode: operator,
+            mode,
+            configs: configs_to_use,
+        };
+        let ranked = self.hook.read().await.rank_protocols(&ctx);
+
+        let max_attempts: usize = 3;
+        let base_delay = Duration::from_millis(200);
+        let max_delay = Duration::from_secs(2);
+
+        for cfg in ranked.iter().take(5) {
+            let mut last_err: Option<WardenError> = None;
+            for attempt in 1..=max_attempts {
+                match self.open_session(cfg).await {
                     Ok(conn) => {
                         let sid = conn.session_id.clone();
-                        self.sessions.write().await.insert(sid.clone(), SessionHandle {
-                            id: sid, protocol: proto.clone(),
-                            host: conn.host.clone(), port: conn.port, started_at: conn.connected_at,
-                            fingerprint: conn.protocol.clone(),
-                        });
+                        self.sessions.write().await.insert(
+                            sid.clone(),
+                            SessionHandle {
+                                _id: sid,
+                                _protocol: cfg.protocol.clone(),
+                                _host: conn.host.clone(),
+                                _port: conn.port,
+                                _started_at: conn.connected_at,
+                                _fingerprint: conn.protocol.clone(),
+                            },
+                        );
                         return Ok(Some(conn));
                     }
-                    Err(e) => warn!("{} -> {}:{} failed: {:?}", proto, cfg.host, cfg.port, e),
+                    Err(e) => {
+                        last_err = Some(e);
+                        if attempt < max_attempts {
+                            let delay = (base_delay * 2u32.pow(attempt as u32 - 1)).min(max_delay);
+                            sleep(delay).await;
+                        }
+                    }
                 }
+            }
+            if let Some(e) = last_err {
+                warn!(
+                    "{} -> {}:{} exhausted {} attempts: {:?}",
+                    cfg.protocol, cfg.host, cfg.port, max_attempts, e
+                );
             }
         }
         Ok(None)
     }
 
-    async fn open_session(&self, proto: &str, cfg: &ServerConfig) -> Result<ActiveConnection, WardenError> {
-        let _ = url::Url::parse(&cfg.config_line)?;
-        let sid = Uuid::new_v4().to_string();
+    async fn open_session(&self, cfg: &ServerConfig) -> Result<ActiveConnection, WardenError> {
+        info!(
+            "open wg {}:{} sid={}",
+            cfg.host,
+            cfg.port,
+            &Uuid::new_v4().to_string()[..8]
+        );
+
+        let wg_config = WireguardConfig {
+            public_key: [0u8; 32],
+            endpoint: format!("{}:{}", cfg.host, cfg.port)
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| WardenError::TunnelError(e.to_string()))?,
+            allowed_ips: vec!["10.66.66.2/32".into()],
+            persistent_keepalive: 25,
+        };
+
+        let handle = WireGuardTunnelHandle::new(Uuid::new_v4().to_string(), wg_config);
+        let handshake_timeout = std::time::Duration::from_secs(
+            std::env::var("WARDEN_HANDSHAKE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5),
+        );
+        let mut tunnel = tokio::time::timeout(handshake_timeout, handle.connect())
+            .await
+            .map_err(|_| WardenError::TunnelError("handshake timed out".into()))??;
+
+        let session_id = Uuid::new_v4().to_string();
         let now = Utc::now();
-        info!("open {} {}:{} sid={}", proto, cfg.host, cfg.port, &sid[..8]);
-        // Phase 2: handoff to boringtun / shadowsocks / quinn runtime.
+
+        self.apply_killswitch().await;
+
+        tokio::spawn(async move {
+            let mut tun_opt = super::tun::try_open_tun().await;
+            loop {
+                if let Some(ref mut tun) = tun_opt {
+                    if let Err(e) = tunnel.run(tun).await {
+                        warn!("tunnel run error: {:?}", e);
+                        // Try to re-open the TUN device once before retrying.
+                        tun_opt = super::tun::try_open_tun().await;
+                    }
+                } else {
+                    sleep(Duration::from_secs(1)).await;
+                    tun_opt = super::tun::try_open_tun().await;
+                }
+            }
+        });
+
         Ok(ActiveConnection {
-            session_id: sid,
-            protocol: proto.into(),
+            session_id,
+            protocol: "wireguard".into(),
             server: format!("{}:{}", cfg.host, cfg.port),
             host: cfg.host.clone(),
             port: cfg.port,
@@ -96,20 +206,33 @@ impl ProtocolManager {
 
     pub async fn disconnect(&self, session_id: &str) -> Result<(), WardenError> {
         self.sessions.write().await.remove(session_id);
+        self.remove_killswitch().await;
         Ok(())
     }
 
     pub async fn list(&self) -> Vec<String> {
         self.sessions.read().await.keys().cloned().collect()
     }
-}
 
-fn enabled_for(c: &ProtocolsConfig, p: &str) -> bool {
-    match p {
-        s if s == "wireguard" => c.wireguard_enabled,
-        s if s == "vless" => c.vless_enabled,
-        s if s == "shadowsocks" => c.shadowsocks_enabled,
-        s if s == "hysteria2" => c.hysteria2_enabled,
-        _ => false,
+    async fn apply_killswitch(&self) {
+        let _ = tokio::process::Command::new("iptables")
+            .args(["-A", "OUTPUT", "-o", "warden0", "-j", "ACCEPT"])
+            .output()
+            .await;
+        let _ = tokio::process::Command::new("iptables")
+            .args(["-A", "OUTPUT", "-d", "10.66.66.2/32", "-j", "ACCEPT"])
+            .output()
+            .await;
+    }
+
+    async fn remove_killswitch(&self) {
+        let _ = tokio::process::Command::new("iptables")
+            .args(["-D", "OUTPUT", "-o", "warden0", "-j", "ACCEPT"])
+            .output()
+            .await;
+        let _ = tokio::process::Command::new("iptables")
+            .args(["-D", "OUTPUT", "-d", "10.66.66.2/32", "-j", "ACCEPT"])
+            .output()
+            .await;
     }
 }

@@ -1,0 +1,63 @@
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.11s
+     Running unittests src/lib.rs (warden/target/debug/deps/warden_core-bef2168bde1e8a6a)
+
+running 22 tests
+[pool] cache_roundtrip: ProvenEntry{mci-wg} saved+loaded OK
+[pool] parallel probe: 5 configs probed in 108.597µs, ranked by avg_latency
+test pool::tests::stale_cleanup ... ok
+test opsec::tests::t_hwid_empty_when_off ... ok
+test opsec::tests::t_fingerprint_rotation ... ok
+test pool::tests::cache_roundtrip ... ok
+test opsec::tests::t_hwid_persists ... ok
+test ternary::controller::tests::predict_topk_sorted ... ok
+test pool::tests::parallel_probe_mock ... ok
+test ternary::controller::tests::forward_shape ... ok
+test ternary::sharded_store::tests::predicates_used ... ok
+test ternary::ternary_vsa::tests::bind_unbind_identity ... ok
+test ternary::ternary_vsa::tests::cleanup_picks_best ... ok
+test ternary::ternary_vsa::tests::cosine_self_neg ... ok
+test updater::tests::t_version_cmp ... ok
+test updater::tests::t_asset_for_none ... ok
+test updater::tests::t_current_target ... ok
+test updater::tests::t_release_parse_and_asset_for ... ok
+test updater::tests::t_version_parse_simple ... ok
+test ternary::sharded_store::tests::query_exact ... ok
+HANDSHAKE OK
+A tx=32 rx=32
+B tx=32 rx=32
+test tunnel::loopback::loopback_handshake_and_data ... ok
+[decision] Speed rank  -> ["fast-leaky", "slow-stealth"]
+=== KB FACTS ===
+  mci -- capital -- moscow
+  spb -- capital -- spb
+  kazan -- capital -- kazan
+  mci -- located_in -- rusa
+  spb -- located_in -- rusa
+  rusa -- border -- finland
+  rusa -- border -- china
+  finland -- located_in -- europe
+  china -- located_in -- asia
+  rusa -- risk -- high
+=== controlled_reason(mci, capital) chain ===
+  [0] mci
+  [1] moscow
+test ternary::reasoning_core::tests::controlled_reason_reaches_moscow ... ok
+=== save/load roundtrip query(mci, capital) ===
+  ["moscow"]
+test ternary::reasoning_core::tests::save_load_roundtrip ... ok
+[decision] Stealth rank -> ["slow-stealth", "fast-leaky"]
+test decision::tests::mode_ranking_differs ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests warden_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+--- Re-run 2026-09-01 ---
+self-test: SERVICE OK verified.
+22 passed; tunnel proof OK (32,32,32,32); decision ranking non-empty.

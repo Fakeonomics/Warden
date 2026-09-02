@@ -1,0 +1,35 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/warden_core-bef2168bde1e8a6a)
+
+running 22 tests
+test opsec::tests::t_hwid_empty_when_off ... ok
+test opsec::tests::t_hwid_persists ... ok
+test pool::tests::stale_cleanup ... ok
+test pool::tests::cache_roundtrip ... ok
+test opsec::tests::t_fingerprint_rotation ... ok
+test ternary::controller::tests::predict_topk_sorted ... ok
+test pool::tests::parallel_probe_mock ... ok
+test ternary::ternary_vsa::tests::cosine_self_neg ... ok
+test ternary::controller::tests::forward_shape ... ok
+test updater::tests::t_asset_for_none ... ok
+test ternary::ternary_vsa::tests::bind_unbind_identity ... ok
+test ternary::ternary_vsa::tests::cleanup_picks_best ... ok
+test ternary::sharded_store::tests::predicates_used ... ok
+test ternary::sharded_store::tests::query_exact ... ok
+test updater::tests::t_current_target ... ok
+test updater::tests::t_release_parse_and_asset_for ... ok
+test updater::tests::t_version_cmp ... ok
+test updater::tests::t_version_parse_simple ... ok
+test tunnel::loopback::loopback_handshake_and_data ... ok
+test ternary::reasoning_core::tests::controlled_reason_reaches_moscow ... ok
+test ternary::reasoning_core::tests::save_load_roundtrip ... ok
+test decision::tests::mode_ranking_differs ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests warden_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

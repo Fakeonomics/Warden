@@ -1,0 +1,112 @@
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+warning: field `timeout` is never read
+  --> warden-core/src/discovery.rs:54:5
+   |
+51 | pub struct DiscoveryEngine {
+   |            --------------- field in this struct
+...
+54 |     timeout: Duration,
+   |     ^^^^^^^
+   |
+   = note: `DiscoveryEngine` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `warden-core` (lib) generated 1 warning
+warning: `warden-core` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.10s
+     Running unittests src/lib.rs (target/debug/deps/warden_core-bef2168bde1e8a6a)
+
+running 25 tests
+test opsec::tests::t_hwid_empty_when_off ... ok
+[pool] cache_roundtrip: ProvenEntry{mci-wg} saved+loaded OK
+test opsec::tests::t_fingerprint_rotation ... ok
+test opsec::tests::t_hwid_persists ... ok
+test pool::tests::cache_roundtrip ... ok
+test pool::tests::stale_cleanup ... ok
+[pool] parallel probe: 5 configs probed in 130.562µs, ranked by avg_latency
+test ternary::ternary_vsa::tests::bind_unbind_identity ... ok
+test pool::tests::parallel_probe_mock ... ok
+test ternary::controller::tests::predict_topk_sorted ... ok
+test ternary::ternary_vsa::tests::cleanup_picks_best ... ok
+test ternary::ternary_vsa::tests::cosine_self_neg ... ok
+test updater::tests::t_current_target ... ok
+test ternary::controller::tests::forward_shape ... ok
+test updater::tests::t_asset_for_none ... ok
+test updater::tests::t_release_parse_and_asset_for ... ok
+test ternary::sharded_store::tests::predicates_used ... ok
+test ternary::sharded_store::tests::query_exact ... ok
+test updater::tests::t_version_cmp ... ok
+test updater::tests::t_version_parse_simple ... ok
+HANDSHAKE OK
+A tx=32 rx=32
+B tx=32 rx=32
+test tunnel::loopback::loopback_handshake_and_data ... ok
+=== KB FACTS ===
+  mci -- capital -- moscow
+  spb -- capital -- spb
+  kazan -- capital -- kazan
+  mci -- located_in -- rusa
+  spb -- located_in -- rusa
+  rusa -- border -- finland
+  rusa -- border -- china
+  finland -- located_in -- europe
+  china -- located_in -- asia
+  rusa -- risk -- high
+=== controlled_reason(mci, capital) chain ===
+  [0] mci
+  [1] moscow
+test ternary::reasoning_core::tests::controlled_reason_reaches_moscow ... ok
+[decision] Speed rank  -> ["fast-leaky", "slow-stealth"]
+FILTER_PROTOCOL vless -> 1
+FILTER_PROTOCOL trojan -> 1
+FILTER_PROTOCOL ss -> 1
+FILTER_PROTOCOL vmess -> 1
+FILTER_PROTOCOL hysteria2 -> 1
+FILTER_PROTOCOL wireguard -> 1
+FILTER_UNKNOWN ftp -> 0
+FILTER_UNKNOWN http -> 0
+FILTER_UNKNOWN https -> 0
+FILTER_UNKNOWN socks5 -> 0
+FILTER_UNKNOWN ssh -> 0
+FILTER_UNKNOWN tcp -> 0
+FILTER_UNKNOWN udp -> 0
+FILTER_UNKNOWN  -> 0
+FILTER_PROTOCOL_ALL_PASSED
+test discovery::temp_real_feeds::discovery_filter_protocols ... ok
+EDGE_EMPTY=0
+EDGE_MALFORMED_BASE64_LINES=["!!!not-valid-base64!!!"]
+EDGE_MALFORMED_PARSED=0
+EDGE_UNKNOWN_PROTOCOLS_FILTERED=1
+EDGE_DEDUP=2
+=== save/load roundtrip query(mci, capital) ===
+  ["moscow"]
+test ternary::reasoning_core::tests::save_load_roundtrip ... ok
+[decision] Stealth rank -> ["slow-stealth", "fast-leaky"]
+test decision::tests::mode_ranking_differs ... ok
+EDGE_TIMEOUT_OK count=0
+EDGE_TIMEOUT_ELAPSED_MS=1001
+EDGE_CASES_ALL_PASSED
+test discovery::temp_real_feeds::discovery_edge_cases ... ok
+FEED_FAIL name=all err=http: error sending request for url (https://cdn.jsdelivr.net/gh/0xRadikal/Free-v2ray-Configs@main/all/configs_base64.txt)
+FEED_OK name=vless count=6520
+FEED_OK name=trojan count=3682
+FEED_OK name=ss count=922
+REAL_FEEDS_FOUND=11124
+REAL_FEED_RAW=11124 FILTERED=11124
+REAL_FEED_WORKED=3 FAILED=1
+REAL_FEED_PROTOCOLS={"ss": 922, "vless": 6520, "trojan": 3682}
+REAL_FEED_LINE=vless://00144519-7e0d-476b-8d28-435576af9262@167.17.69.171:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=ALT8hIGeZEhi0sQFbXP_ntBg8Xo-v7i0YCLrqTnBxRk&security=reality&sid=0990d22f&sni=www.cloudflare.com&type=tcp#US 🇺🇸 | @Raydikalx | BF3066
+REAL_FEED_LINE=vless://0014fa64-cd57-361b-1d44-7b52d286b9bd@69.46.46.25:443?path=/ws/0014fa64-cd57-361b-1d44-7b52d286b9bd&security=tls&alpn=http/1.1&encryption=none&host=limo-production-c1f7.up.railway.app&fp=chrome&type=ws&sni=limo-production-c1f7.up.railway.app#US 🇺🇸 | @Raydikalx | 7CFEAC
+REAL_FEED_LINE=vless://00506574-3b10-4f7d-9b2f-8afdc5919b93@31.76.14.59:443?security=reality&encryption=none&pbk=KXLSKenDdZrp3WANgHvkIuEFuGNb02R39SIFhWyhR3o&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=stackoverflow.com&sid=a8a897f350b14b20#NL 🇳🇱 | @Raydikalx | 7833B9
+REAL_FEED_LINE=vless://00506574-3b10-4f7d-9b2f-8afdc5919b93@neth2.nihaovpn.ru:443?mode=gun&security=reality&encryption=none&pbk=qNCzfY_ga5_n3NCD0g1XoiBWcnofF4SHUM27jvoBAyw&fp=chrome&type=grpc&serviceName=grpc&sni=stackoverflow.com&sid=0ea83f18e6b2#Global 🌐 | @Raydikalx | 9D4F03
+REAL_FEED_LINE=vless://0058c215-ab1e-400c-a403-b5b2fda7e846@pishdad.org:8080?path=/&security=none&encryption=none&host=tr-cd.sublink-vip2.com&type=ws#CA 🇨🇦 | @Raydikalx | C13F83
+test discovery::temp_real_feeds::discovery_real_feeds ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.29s
+
+   Doc-tests warden_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,49 @@
+name: Release
+on:
+  release:
+    types: [published]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-linux, aarch64-linux, x86_64-macos, x86_64-windows]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }} -p warden-core -p warden-app
+      - name: Package binary
+        run: |
+          cp target/${{ matrix.target }}/release/warden-app ./warden-${{ matrix.target }}
+          chmod +x ./warden-${{ matrix.target }}
+      - name: Create release asset (binary)
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./warden-${{ matrix.target }}
+          asset_name: warden-${{ matrix.target }}
+          asset_content_type: application/octet-stream
+      - name: Upload with gh CLI (fallback)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} ./warden-${{ matrix.target }} --repo ${{ github.repository }} --clobber || echo "gh upload skipped (asset may already exist)"
+      - name: Build AppImage (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          bash packaging/build_appimage.sh
+          ls *.AppImage || echo "No AppImage produced"
+          # Rename produced AppImage to expected asset name
+          for f in *.AppImage; do mv "$f" "warden-${{ matrix.target }}.AppImage"; done
+      - name: Upload AppImage
+        if: contains(matrix.target, 'linux')
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./warden-${{ matrix.target }}.AppImage
+          asset_name: warden-${{ matrix.target }}.AppImage
+          asset_content_type: application/vnd.appimage

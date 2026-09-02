@@ -1,0 +1,1 @@
+PASS: rotation verified, build/test/fmt/self-test pass, formatting fixed

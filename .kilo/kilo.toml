@@ -1,0 +1,16 @@
+[project]
+name = "Warden"
+workspace = true
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/Fakeonomics/Warden"
+
+[build]
+toolchain = "stable"
+commands = [
+  "cargo fmt --check",
+  "cargo build -p warden-core -p warden-app",
+  "cargo test -p warden-core",
+  "cargo clippy -p warden-core -p warden-app -- -D warnings",
+]

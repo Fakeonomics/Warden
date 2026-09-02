@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Warden
+Exec=/usr/bin/warden
+Icon=warden
+Comment=Autonomous VPN
+Categories=Network;Utility;

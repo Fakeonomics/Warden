@@ -1,0 +1,57 @@
+VERIFICATION REPORT — FAKEONOMICS INTEGRATION CHECK
+======================================================
+Date: 2026-08-31
+Working directory: /var/home/yuri/FAKEONOMICS
+Target file: /var/home/yuri/FAKEONOMICS/warden/FINAL_VERIFICATION.txt
+
+ITEM (1) — /var/home/yuri/FAKEONOMICS/warden/test_proof.sh
+  FULL PATH: /var/home/yuri/FAKEONOMICS/warden/test_proof.sh
+  RESULT: PASS (exists, 443 bytes)
+
+ITEM (2) — /proof_output_final.txt (resolved absolute)
+  FULL PATH CHECKED: /var/home/yuri/FAKEONOMICS/proof_output_final.txt
+  RESULT: PASS (1167 bytes, exists)
+
+ITEM (3) — /final_result.txt (resolved absolute)
+  FULL PATH CHECKED: /var/home/yuri/FAKEONOMICS/final_result.txt
+  RESULT: FAIL — MISSING at this absolute path (exists at /var/home/yuri/FAKEONOMICS/warden/final_result.txt; not fabricated)
+
+ITEM (4) — /INTEGRATION_PROOF.md (resolved absolute)
+  FULL PATH CHECKED: /var/home/yuri/FAKEONOMICS/INTEGRATION_PROOF.md
+  RESULT: FAIL — MISSING at this absolute path (exists at /var/home/yuri/FAKEONOMICS/warden/INTEGRATION_PROOF.md; not fabricated)
+
+ITEM (5) — /WARDEN-REBUILD-ТЗ.md
+  FULL PATH: /var/home/yuri/FAKEONOMICS/WARDEN-REBUILD-ТЗ.md
+  RESULT: PASS (17894 bytes, exists)
+
+ITEM (6) — .github/workflows/ci.yml
+  FULL PATH: /var/home/yuri/FAKEONOMICS/.github/workflows/ci.yml
+  RESULT: PASS (499 bytes)
+
+ITEM (7) — .github/workflows/release.yml
+  FULL PATH: /var/home/yuri/FAKEONOMICS/.github/workflows/release.yml
+  RESULT: PASS (743 bytes; file named release.yml, not pages.yml)
+
+ITEM (8) — .github/pages/index.html
+  FULL PATH: /var/home/yuri/FAKEONOMICS/.github/pages/index.html
+  RESULT: PASS (20849 bytes)
+
+ITEM (9) — discovery.rs
+  FULL PATH: /var/home/yuri/FAKEONOMICS/warden/warden-core/src/discovery.rs
+  RESULT: PASS (9810 bytes, exists)
+
+ITEM (10) — Vec rotation
+  FULL PATH: /var/home/yuri/FAKEONOMICS/warden/warden-core/src/lib.rs
+  CHECKS:
+    Line 34: pub active: RwLock<Vec<ActiveConnection>> — PASS
+    Line 167: Vec::new() — PASS
+    Line 240: Vec<ActiveConnection> (status_all) — PASS
+    Line 247: rotate -> Vec<ActiveConnection> — PASS
+    Line 311: replacements: Vec<ActiveConnection> — PASS
+  RESULT: PASS
+
+SUMMARY
+-------
+PASS: 8 (items 1, 2, 5, 6, 7, 8, 9, 10)
+FAIL: 2 (items 3, 4 — missing at requested absolute paths; not invented)
+NOT FABRICATED: /var/home/yuri/FAKEONOMICS/final_result.txt, /var/home/yuri/FAKEONOMICS/INTEGRATION_PROOF.md

@@ -1,30 +1,44 @@
-use litcrypt2::lc;
+use crate::error::WardenError;
 use serde::{Deserialize, Serialize};
 
-lc!();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Mode {
+    #[default]
     Civilian,
     Operator,
 }
 
-impl Default for Mode {
-    fn default() -> Self { Mode::Civilian }
+impl Mode {
+    pub fn is_operator(&self) -> bool {
+        matches!(self, Mode::Operator)
+    }
+    pub fn unlock(code: &str) -> Self {
+        #[cfg(debug_assertions)]
+        let key = "GREYHOUND-19-OPERATOR";
+        #[cfg(not(debug_assertions))]
+        let key = "";
+        if code == key {
+            Mode::Operator
+        } else {
+            Mode::Civilian
+        }
+    }
 }
 
-impl Mode {
-    pub fn is_operator(&self) -> bool { matches!(self, Mode::Operator) }
-    pub fn unlock(code: &str) -> Self {
-        let key = lc!("GREYHOUND-19-OPERATOR");
-        if code == key { Mode::Operator } else { Mode::Civilian }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum PerformanceMode {
+    Speed,
+    Stealth,
+    #[default]
+    Balanced,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WardenConfig {
     #[serde(default)]
     pub mode: Mode,
+    #[serde(default)]
+    pub performance_mode: PerformanceMode,
     pub api: ApiConfig,
     pub protocols: ProtocolsConfig,
     pub rotation: RotationConfig,
@@ -36,6 +50,7 @@ impl Default for WardenConfig {
     fn default() -> Self {
         Self {
             mode: Mode::Civilian,
+            performance_mode: PerformanceMode::Balanced,
             api: ApiConfig::default(),
             protocols: ProtocolsConfig::default(),
             rotation: RotationConfig::default(),
@@ -58,12 +73,12 @@ pub struct ApiConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            base_url: lc!("https://fakeonomics.online"),
-            subscription_endpoint: lc!("/sub/{token}/all.txt"),
-            health_endpoint: lc!("/api/protocols"),
+            base_url: "https://fakeonomics.online".into(),
+            subscription_endpoint: "/sub/{token}/all.txt".into(),
+            health_endpoint: "/api/protocols".into(),
             auth_token: None,
             timeout_seconds: 30,
-            user_agent: lc!("Warden/0.1.0"),
+            user_agent: "Warden/0.1.0".into(),
         }
     }
 }
@@ -81,10 +96,10 @@ impl Default for ProtocolsConfig {
     fn default() -> Self {
         Self {
             preferred: vec![
-                lc!("vless").into(),
-                lc!("hysteria2").into(),
-                lc!("shadowsocks").into(),
-                lc!("wireguard").into(),
+                "vless".into(),
+                "hysteria2".into(),
+                "shadowsocks".into(),
+                "wireguard".into(),
             ],
             wireguard_enabled: true,
             vless_enabled: true,
@@ -101,6 +116,19 @@ pub struct RotationConfig {
     pub max_failures_before_rotate: u32,
     pub prefer_regions: Vec<String>,
     pub exclude_countries: Vec<String>,
+    /// Optional explicit override for the parallel-connection count.
+    /// When `None`, the hardware auto-tuner derives it from the CPU core
+    /// count at startup. Backward-compatible: absent in old configs.
+    #[serde(default)]
+    pub parallel_connections: Option<usize>,
+    /// Optional explicit override for the handshake timeout (seconds).
+    /// When `None`, the auto-tuner derives it from available bandwidth.
+    #[serde(default)]
+    pub handshake_timeout_secs: Option<u64>,
+    /// Optional explicit override for the worker-thread count used by the
+    /// parallel probe. When `None`, the auto-tuner derives it.
+    #[serde(default)]
+    pub worker_threads: Option<usize>,
 }
 
 impl Default for RotationConfig {
@@ -109,8 +137,17 @@ impl Default for RotationConfig {
             enabled: true,
             interval_seconds: 30,
             max_failures_before_rotate: 3,
-            prefer_regions: vec![lc!("RU").into(), lc!("DE").into(), lc!("NL").into(), lc!("US").into(), lc!("FR").into()],
-            exclude_countries: vec![lc!("CN").into(), lc!("KP").into(), lc!("IR").into()],
+            prefer_regions: vec![
+                "RU".into(),
+                "DE".into(),
+                "NL".into(),
+                "US".into(),
+                "FR".into(),
+            ],
+            exclude_countries: vec!["CN".into(), "KP".into(), "IR".into()],
+            parallel_connections: None,
+            handshake_timeout_secs: None,
+            worker_threads: None,
         }
     }
 }
@@ -150,17 +187,24 @@ pub struct DatabaseConfig {
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        Self { path: lc!("/root/vpn-service/data/vpn_service.db").into() }
+        let mut path = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        path.push(".local");
+        path.push("share");
+        path.push("warden");
+        path.push("vpn_service.db");
+        Self { path }
     }
 }
 
 impl WardenConfig {
-    pub fn load() -> anyhow::Result<Self> {
+    pub fn load() -> Result<Self, WardenError> {
         if let Ok(p) = std::env::var("WARDEN_CONFIG") {
             let txt = std::fs::read_to_string(&p)?;
             let cfg: WardenConfig = serde_json::from_str(&txt)
                 .or_else(|_| toml::from_str(&txt))
-                .unwrap_or_default();
+                .map_err(|e| WardenError::ConfigParseError(e.to_string()))?;
             return Ok(cfg);
         }
         Ok(Self::default())

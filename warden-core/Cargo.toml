@@ -27,7 +27,7 @@ quinn = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 toml = { workspace = true }
-litcrypt2 = { workspace = true }
-
-[build-dependencies]
-litcrypt2 = { workspace = true }
+tun = { version = "0.6", features = ["async"] }
+clap = { version = "4", features = ["derive"] }
+rand = { version = "0.8", features = ["std", "std_rng"] }
+bincode = "1"

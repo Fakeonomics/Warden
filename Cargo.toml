@@ -22,18 +22,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 base64 = "0.22"
-uuid = { version = "1.8", features = ["v4", "serde"] }
+uuid = { version = "1.8", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"
 ring = "0.17"
-shadowsocks = { version = "1.24", features = ["aead-2022", "tokio"] }
-boringtun = { version = "0.6", features = ["tokio"] }
+shadowsocks = { version = "1.24", features = ["aead-cipher-2022"] }
+boringtun = "0.7"
 quinn = "0.11"
 async-trait = "0.1"
 bytes = "1.12"
 toml = "0.8"
-litcrypt2 = "0.1"
 
 [profile.release]
 lto = "fat"

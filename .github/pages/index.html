@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Warden</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0a;
+  --fg: #f0ede8;
+  --dim: #5a5a66;
+  --line: rgba(255,255,255,0.05);
+  --accent: #c8ff00;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { height: 100%; }
+body {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 300;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100%;
+  overflow-x: hidden;
+  -webkit-user-select: none; user-select: none;
+}
+a { color: var(--fg); text-decoration: underline; text-underline-offset: 0.2em; text-decoration-color: rgba(255,255,255,0.2); }
+a:hover { text-decoration-color: var(--fg); }
+
+.wrap h1, .lead, .links, .panel h2, .panel p, .cap h3, .cap p, .platform-labels, .nav {
+  -webkit-user-select: none; user-select: none;
+}
+.install-box .cmd, .term .body {
+  -webkit-user-select: text; user-select: text;
+}
+
+* { -webkit-user-select: none; user-select: none; }
+.install-box .cmd, .term .body, .install-box .cmd *, .term .body * { -webkit-user-select: text; user-select: text; }
+::selection { background: transparent; color: inherit; }
+
+.slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px;
+  background: rgba(255,255,255,0.1); border-radius: 2px;
+  margin: 16px 0 8px; outline: none; cursor: pointer;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 40px; height: 14px;
+  background: var(--fg); border-radius: 7px;
+  cursor: grab;
+}
+.slider::-webkit-slider-thumb:active { cursor: grabbing; }
+.slider::-moz-range-thumb {
+  width: 40px; height: 14px; border: none;
+  background: var(--fg); border-radius: 7px;
+  cursor: grab;
+}
+a { color: var(--fg); text-decoration: underline; text-underline-offset: 0.2em; text-decoration-color: rgba(255,255,255,0.2); }
+a:hover { text-decoration-color: var(--fg); }
+
+.nav { position: fixed; top: 20px; right: 28px; z-index: 100; font-size: 0.72rem; }
+.nav a { color: var(--fg); text-decoration: none; }
+
+.back-btn {
+  position: fixed; top: 20px; left: 28px; z-index: 100;
+  background: transparent; border: 1px solid var(--line); border-radius: 4px;
+  padding: 6px 12px; font-size: 0.72rem; color: var(--fg); cursor: pointer;
+  transition: all 0.2s; font-family: inherit;
+  opacity: 0; pointer-events: none; transform: translateX(-8px);
+}
+.back-btn:hover { border-color: rgba(255,255,255,0.2); }
+.back-btn.show { opacity: 1; pointer-events: auto; transform: translateX(0); }
+
+.wrap {
+  width: 100vw; min-height: 100vh;
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  position: relative; padding: 80px 24px; z-index: 1;
+  transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.wrap.hidden { pointer-events: none; }
+.links { position: relative; z-index: 10; }
+.links a { pointer-events: auto; cursor: pointer; }
+
+.logo {
+  width: clamp(140px, 25vw, 280px); height: clamp(140px, 25vw, 280px);
+  margin-bottom: 1rem; z-index: 2;
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.logo img {
+  width: 100%; height: 100%; object-fit: contain;
+  filter: grayscale(1) invert(1) brightness(1.8);
+  -webkit-user-drag: none; user-drag: none;
+  -webkit-user-select: none; user-select: none;
+  pointer-events: none;
+}
+.logo.avatar { width: 72px; height: 72px; border-radius: 50%; margin-bottom: 1.5rem; }
+.logo.avatar img { border-radius: 50%; }
+.logo.blur { filter: blur(8px) opacity(0.25); transform: scale(1.2); z-index: 1; pointer-events: none; }
+
+h1 { font-size: clamp(2rem, 4vw, 3.5rem); font-weight: 400; letter-spacing: -0.05em; line-height: 1; margin-bottom: 0.5rem; transition: all 0.4s; }
+h1.up { transform: translateY(-12vh) scale(0.6); opacity: 0.2; }
+.lead { color: var(--dim); font-size: 0.9rem; max-width: 420px; text-align: center; margin-bottom: 12px; transition: opacity 0.3s; }
+.links { display: flex; gap: 16px; font-size: 0.8rem; transition: opacity 0.3s; flex-wrap: wrap; justify-content: center; }
+.links a { color: var(--dim); }
+.links a:hover { color: var(--fg); }
+.hide-text .lead, .hide-text .links { opacity: 0; pointer-events: none; }
+
+.panel {
+  position: fixed; top: 50%; transform: translateY(-50%);
+  width: min(380px, 32vw); max-height: 80vh; overflow-y: auto;
+  opacity: 0; visibility: hidden; transition: opacity 0.4s, transform 0.4s; z-index: 10;
+  background: rgba(10,10,10,0.85); backdrop-filter: blur(4px); border-radius: 6px; padding: 24px;
+}
+.panel.left { left: 4vw; }
+.panel.right { right: 4vw; transform: translateY(-50%) translateX(20px); }
+.panel.center { left: 50%; transform: translate(-50%, -50%) translateY(20px); width: min(520px, 50vw); }
+.panel.visible { opacity: 1; visibility: visible; transform: translateY(-50%) translateX(0); }
+.panel.center.visible { transform: translate(-50%, -50%) translateY(0); }
+
+.panel h2 { font-size: 1.4rem; font-weight: 400; letter-spacing: -0.02em; margin-bottom: 16px; }
+.panel h2 em { font-style: italic; color: var(--dim); }
+.panel p { font-size: 0.85rem; color: var(--dim); margin-bottom: 12px; }
+
+.cap h3 { font-size: 0.72rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; color: var(--fg); }
+.cap div { margin-bottom: 14px; }
+
+.term { border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.term .bar { display: flex; gap: 4px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.term .bar i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+.term .body { padding: 12px 14px; font-size: 0.72rem; line-height: 1.85; }
+.term .body span { display: block; color: var(--dim); }
+.term .body .p::before { content: '$ '; color: var(--fg); }
+.term .body .ok { color: var(--fg); }
+
+.install-box {
+  background: rgba(255,255,255,0.02); border: 1px solid var(--line); border-radius: 4px;
+  padding: 14px 18px; font-size: 0.8rem; position: relative; user-select: all;
+  overflow: hidden; max-width: 100%; box-sizing: border-box;
+}
+.install-box .cmd {
+  color: var(--fg); font-size: 0.72rem; line-height: 1.5;
+  word-break: break-all; overflow-wrap: break-word;
+  padding-right: 50px; margin-bottom: 8px;
+  -webkit-user-select: text; user-select: text;
+}
+.install-box .label { font-size: 0.65rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+
+.install-actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+.install-actions .or { font-size: 0.7rem; color: var(--dim); }
+
+.platform-labels { display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--dim); margin-bottom: 12px; position: relative; }
+.platform-labels span { cursor: pointer; transition: color 0.2s; width: 25%; text-align: center; }
+.platform-labels span:hover { color: var(--fg); }
+.platform-labels span.active { color: var(--fg); }
+
+.copy-btn {
+  padding: 8px 16px; font-size: 0.75rem;
+  background: transparent; border: 1px solid var(--line);
+  color: var(--fg); border-radius: 4px; cursor: pointer;
+  transition: all 0.2s; font-family: inherit;
+}
+.copy-btn:hover { border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.03); }
+.copy-btn.copied { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+.download-btn {
+  display: inline-block; padding: 8px 16px; font-size: 0.75rem;
+  background: var(--fg); color: var(--bg); border: 1px solid var(--fg);
+  border-radius: 4px; text-decoration: none; transition: all 0.2s; font-family: inherit;
+  flex: 1; text-align: center;
+}
+.download-btn:hover { opacity: 0.85; }
+
+.gh-name { font-size: 1rem; font-weight: 400; margin-bottom: 4px; }
+.gh-bio { font-size: 0.8rem; color: var(--dim); margin-bottom: 16px; }
+.gh-link { display: inline-block; padding: 8px 16px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.78rem; color: var(--fg); text-decoration: none; transition: all 0.2s; }
+.gh-link:hover { border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.03); }
+
+@media (max-width: 768px) {
+  .panel { width: 80vw; left: 10vw !important; right: auto !important; transform: translateY(-50%) !important; }
+  .panel.center { left: 50% !important; transform: translate(-50%, -50%) !important; }
+  .wrap { padding: 60px 16px; }
+  .links { gap: 10px; font-size: 0.75rem; }
+  .install-actions { flex-direction: column; align: stretch; }
+  .install-actions .or { text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<button class="back-btn" id="backBtn" onclick="show('hero')">&larr; back</button>
+
+<!-- Center hero -->
+<div class="wrap" id="hero">
+<div class="logo" id="logo">
+<img src="assets/logo-bw.png" alt="Warden">
+</div>
+<h1>WARDEN</h1>
+<p class="lead">A VPN that finds its own servers, ranks them by threat, and rotates without asking.</p>
+<p class="links">
+<a href="#" onclick="show('install'); return false;">install</a>
+<a href="#" onclick="show('term'); return false;">self-test</a>
+<a href="#" onclick="show('gh'); return false;">github</a>
+</p>
+</div>
+
+<!-- Panel: Install (center) -->
+<div class="panel center" id="panel-install">
+<h2>Install<em>.</em></h2>
+<p>Pick a platform:</p>
+<div class="install-box" id="installBox">
+<div class="label">platform</div>
+<div class="cmd" id="installCmd">curl -fsSL https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-linux.AppImage -o warden.AppImage && chmod +x warden.AppImage</div>
+<input type="range" min="0" max="3" value="0" class="slider" id="installSlider">
+<div class="platform-labels">
+<span onclick="setPlatform(0)">AppImage</span>
+<span onclick="setPlatform(1)">deb</span>
+<span onclick="setPlatform(2)">dmg</span>
+<span onclick="setPlatform(3)">exe</span>
+</div>
+<div class="install-actions">
+<button class="copy-btn" onclick="copyInstall()">copy</button>
+<span class="or">or</span>
+<a class="download-btn" id="downloadBtn" href="https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-linux.AppImage" download>download AppImage</a>
+</div>
+</div>
+</div>
+
+<!-- Panel: Terminal (right) -->
+<div class="panel right" id="panel-term">
+<h2>Self-test<em>.</em></h2>
+<p>One command checks every layer: tunnel handshake, AI reasoning, OPSEC, discovery.</p>
+<div class="term">
+<div class="bar"><i></i><i></i><i></i></div>
+<div class="body">
+<span class="p">warden self-test</span>
+<span>ternary=true opsec_persist=true tunnel_proof=Some((32, 32, 32, 32))</span>
+<span class="ok">SERVICE OK</span>
+</div>
+</div>
+</div>
+
+<!-- Panel: GitHub (right) -->
+<div class="panel center" id="panel-gh">
+<div class="logo avatar" id="gh-avatar">
+<img src="assets/logo-bw.png" alt="avatar">
+</div>
+<div class="gh-name">Fakeonomics</div>
+<div class="gh-bio">Building Warden &mdash; autonomous VPN client in pure Rust. Multi-protocol, self-healing, zero-trust.</div>
+<a href="https://github.com/Fakeonomics" class="gh-link" target="_blank">github.com/Fakeonomics &rarr;</a>
+</div>
+
+<script>
+var installData = [
+  { cmd: 'curl -fsSL https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-linux.AppImage -o warden.AppImage && chmod +x warden.AppImage', url: 'https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-linux.AppImage' },
+  { cmd: 'curl -fsSL https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-linux.deb -o warden.deb && sudo dpkg -i warden.deb', url: 'https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-linux.deb' },
+  { cmd: 'curl -fsSL https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-macos.dmg -o warden.dmg && open warden.dmg', url: 'https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-macos.dmg' },
+  { cmd: 'curl -fsSL https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-windows.exe -o warden.exe && ./warden.exe', url: 'https://github.com/Fakeonomics/Warden/releases/latest/download/warden-x86_64-windows.exe' }
+];
+
+function copyInstall() {
+  var cmd = document.getElementById('installCmd').textContent;
+  var btn = document.querySelector('#panel-install .copy-btn');
+  navigator.clipboard.writeText(cmd).then(function() {
+    btn.classList.add('copied');
+    btn.textContent = 'copied!';
+    setTimeout(function() { btn.classList.remove('copied'); btn.textContent = 'copy'; }, 1500);
+  });
+}
+
+// Range slider
+var currentIdx = 0;
+
+function setPlatform(idx) {
+  currentIdx = idx;
+  document.getElementById('installSlider').value = idx;
+  document.getElementById('installCmd').textContent = installData[idx].cmd;
+  var dl = document.getElementById('downloadBtn');
+  dl.href = installData[idx].url;
+  dl.textContent = 'download ' + ['AppImage','deb','dmg','exe'][idx];
+  var labels = document.querySelectorAll('.platform-labels span');
+  labels.forEach(function(l, i) { l.classList.toggle('active', i === idx); });
+}
+
+document.getElementById('installSlider').addEventListener('input', function() {
+  setPlatform(parseInt(this.value));
+});
+
+function show(id) {
+  var panels = document.querySelectorAll('.panel');
+  var wrap = document.getElementById('hero');
+  var logo = document.getElementById('logo');
+  var h1 = document.querySelector('.wrap h1');
+  var backBtn = document.getElementById('backBtn');
+  panels.forEach(function(p) { p.classList.remove('visible'); });
+  wrap.classList.remove('hide-text', 'shift-left', 'shift-right', 'hidden');
+  logo.classList.remove('avatar', 'blur');
+  logo.style.opacity = '';
+  logo.style.pointerEvents = '';
+  h1.classList.remove('up');
+  if (backBtn) backBtn.classList.remove('show');
+  var target = document.getElementById('panel-' + id);
+  if (target) {
+    target.classList.add('visible');
+    wrap.classList.add('hide-text', 'hidden');
+    if (backBtn) backBtn.classList.add('show');
+    if (id === 'install') { logo.classList.add('blur'); }
+    if (id === 'gh') { logo.style.opacity = '0'; logo.style.pointerEvents = 'none'; }
+  }
+}
+}
+</script>
+
+</body>
+</html>

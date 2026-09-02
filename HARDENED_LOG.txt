@@ -1,0 +1,70 @@
+=== CARGO BUILD ===
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+   Compiling warden-app v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.67s
+
+=== CLIPPY ===
+    Checking warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+    Checking warden-app v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.34s
+
+=== CARGO TEST ===
+   Compiling warden-core v0.1.0 (/var/home/yuri/FAKEONOMICS/warden/warden-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.24s
+     Running unittests src/lib.rs (warden/target/debug/deps/warden_core-bef2168bde1e8a6a)
+
+running 40 tests
+test decision::tests::empty_configs_returns_empty_not_panic ... ok
+test decision::tests::battery_and_operator_mode_are_context_only ... ok
+test decision::tests::unknown_context_never_empty ... ok
+test decision::tests::unknown_jurisdiction_handled ... ok
+test discovery::unit::dedup_collapses_near_duplicates ... ok
+test discovery::unit::filter_protocols_unknown_dropped ... ok
+test discovery::unit::decode_plain_and_multi_base64 ... ok
+test discovery::unit::parse_known_protocols ... ok
+test discovery::unit::parse_empty_malformed_lines ... ok
+test discovery::unit::parse_unknown_protocol_is_error ... ok
+test opsec::tests::t_status_does_not_panic_when_off ... ok
+test opsec::tests::t_hwid_empty_when_off ... ok
+test opsec::tests::t_fingerprint_rotation ... ok
+test opsec::tests::t_fingerprint_rotation_deterministic ... ok
+test pool::tests::stale_cleanup ... ok
+test real_connect_tests::t_partial_split ... ok
+test pool::tests::parallel_probe_mock ... ok
+test pool::tests::cache_roundtrip ... ok
+test ternary::controller::tests::forward_shape ... ok
+test opsec::tests::t_hwid_persists ... ok
+test ternary::controller::tests::predict_topk_sorted ... ok
+test ternary::ternary_vsa::tests::bind_unbind_identity ... ok
+test ternary::ternary_vsa::tests::cleanup_picks_best ... ok
+test ternary::ternary_vsa::tests::cosine_self_neg ... ok
+test ternary::sharded_store::tests::predicates_used ... ok
+test ternary::sharded_store::tests::query_exact ... ok
+test updater::tests::t_asset_for_none ... ok
+test updater::tests::t_current_target ... ok
+test updater::tests::t_version_cmp ... ok
+test updater::tests::t_release_parse_and_asset_for ... ok
+test updater::tests::t_version_parse_simple ... ok
+test tunnel::loopback::loopback_handshake_and_data ... ok
+test ternary::reasoning_core::tests::controlled_reason_reaches_moscow ... ok
+test real_connect_tests::t_disconnect_empty_is_noop ... ok
+test decision::tests::mode_ranking_differs ... ok
+test ternary::reasoning_core::tests::save_load_roundtrip ... ok
+test real_connect_tests::t_self_test_runs ... ok
+test real_connect_tests::t_connect_retry_all_dead ... ok
+test discovery::temp_real_feeds::discovery_real_feeds ... ok
+test calib::calib::calib_connect_from_configs_dead ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.85s
+
+   Doc-tests warden_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== SELF-TEST ===
+[2m2026-09-01T11:41:15.488442Z[0m [32m INFO[0m [2mwarden_core[0m[2m:[0m warden init mode=Civilian api=https://fakeonomics.online
+ternary=true decision=["test-server"] opsec_persist=true tunnel_proof=Some((32, 32, 32, 32))
+SERVICE OK
