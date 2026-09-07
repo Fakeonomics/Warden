@@ -31,3 +31,5 @@ tun = { version = "0.6", features = ["async"] }
 clap = { version = "4", features = ["derive"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 bincode = "1"
+sha2 = "0.10"
+hex = "0.4"

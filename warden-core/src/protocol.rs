@@ -6,13 +6,23 @@ use crate::{
     config::PerformanceMode,
     decision::{DecisionHook, ThreatContext},
     error::WardenError,
+    hysteria2::Hy2Tunnel,
+    protocol_helpers::{
+        is_port_reachable, Hy2Params, SsParams, TrojanParams, VlessParams, VmessParams,
+    },
+    shadowsocks::SsTunnel,
+    trojan::TrojanTunnel,
     tunnel::{WireGuardTunnelHandle, WireguardConfig},
+    vless::VlessTunnel,
+    vmess::VmessTunnel,
     ActiveConnection,
 };
 use chrono::Utc;
 use tokio::time::sleep;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+use crate::protocol_helpers::extract_wg_pubkey;
 
 pub struct ProtocolManager {
     _config: crate::config::ProtocolsConfig,
@@ -144,18 +154,50 @@ impl ProtocolManager {
     }
 
     async fn open_session(&self, cfg: &ServerConfig) -> Result<ActiveConnection, WardenError> {
+        if !is_port_reachable(&cfg.host, cfg.port).await {
+            return Err(WardenError::TunnelError(format!(
+                "host {}:{} unreachable (TCP probe failed)",
+                cfg.host, cfg.port
+            )));
+        }
         info!(
-            "open wg {}:{} sid={}",
+            "open {} {}:{} sid={}",
+            cfg.protocol,
             cfg.host,
             cfg.port,
             &Uuid::new_v4().to_string()[..8]
         );
 
+        let session_id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+
+        match cfg.protocol.as_str() {
+            "wireguard" | "wg" => self.open_wireguard(cfg, &session_id, now).await,
+            "vless" => self.open_vless(cfg, &session_id, now).await,
+            "trojan" => self.open_trojan(cfg, &session_id, now).await,
+            "ss" | "shadowsocks" => self.open_shadowsocks(cfg, &session_id, now).await,
+            "vmess" => self.open_vmess(cfg, &session_id, now).await,
+            "hysteria2" | "hy2" => self.open_hysteria2(cfg, &session_id, now).await,
+            other => Err(WardenError::ProtocolNotSupported(other.to_string())),
+        }
+    }
+
+    async fn open_wireguard(
+        &self,
+        cfg: &ServerConfig,
+        session_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<ActiveConnection, WardenError> {
+        let endpoint: std::net::SocketAddr = format!("{}:{}", cfg.host, cfg.port)
+            .parse()
+            .map_err(|e: std::net::AddrParseError| WardenError::TunnelError(e.to_string()))?;
+
+        // Extract pubkey from config_line if it's a wg:// URL
+        let public_key = extract_wg_pubkey(&cfg.config_line).unwrap_or([0u8; 32]);
+
         let wg_config = WireguardConfig {
-            public_key: [0u8; 32],
-            endpoint: format!("{}:{}", cfg.host, cfg.port)
-                .parse::<std::net::SocketAddr>()
-                .map_err(|e| WardenError::TunnelError(e.to_string()))?,
+            public_key,
+            endpoint,
             allowed_ips: vec!["10.66.66.2/32".into()],
             persistent_keepalive: 25,
         };
@@ -171,30 +213,127 @@ impl ProtocolManager {
             .await
             .map_err(|_| WardenError::TunnelError("handshake timed out".into()))??;
 
-        let session_id = Uuid::new_v4().to_string();
-        let now = Utc::now();
-
         self.apply_killswitch().await;
-
-        tokio::spawn(async move {
-            let mut tun_opt = super::tun::try_open_tun().await;
-            loop {
-                if let Some(ref mut tun) = tun_opt {
-                    if let Err(e) = tunnel.run(tun).await {
-                        warn!("tunnel run error: {:?}", e);
-                        // Try to re-open the TUN device once before retrying.
-                        tun_opt = super::tun::try_open_tun().await;
-                    }
-                } else {
-                    sleep(Duration::from_secs(1)).await;
-                    tun_opt = super::tun::try_open_tun().await;
-                }
-            }
-        });
+        spawn_tunnel_runner(tunnel, cfg.protocol.clone()).await;
 
         Ok(ActiveConnection {
-            session_id,
+            session_id: session_id.to_string(),
             protocol: "wireguard".into(),
+            server: format!("{}:{}", cfg.host, cfg.port),
+            host: cfg.host.clone(),
+            port: cfg.port,
+            connected_at: now,
+            bytes_sent: 0,
+            bytes_received: 0,
+        })
+    }
+
+    async fn open_vless(
+        &self,
+        cfg: &ServerConfig,
+        session_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<ActiveConnection, WardenError> {
+        let params = VlessParams::from_config_line(&cfg.config_line, &cfg.host, cfg.port)?;
+        let tunnel = crate::vless::VlessTunnel::connect(params).await?;
+        self.apply_killswitch().await;
+        spawn_tunnel_runner_vless(tunnel, cfg.protocol.clone()).await;
+
+        Ok(ActiveConnection {
+            session_id: session_id.to_string(),
+            protocol: "vless".into(),
+            server: format!("{}:{}", cfg.host, cfg.port),
+            host: cfg.host.clone(),
+            port: cfg.port,
+            connected_at: now,
+            bytes_sent: 0,
+            bytes_received: 0,
+        })
+    }
+
+    async fn open_trojan(
+        &self,
+        cfg: &ServerConfig,
+        session_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<ActiveConnection, WardenError> {
+        let params = TrojanParams::from_config_line(&cfg.config_line, &cfg.host, cfg.port)?;
+        let tunnel = crate::trojan::TrojanTunnel::connect(params).await?;
+        self.apply_killswitch().await;
+        spawn_tunnel_runner_trojan(tunnel, cfg.protocol.clone()).await;
+
+        Ok(ActiveConnection {
+            session_id: session_id.to_string(),
+            protocol: "trojan".into(),
+            server: format!("{}:{}", cfg.host, cfg.port),
+            host: cfg.host.clone(),
+            port: cfg.port,
+            connected_at: now,
+            bytes_sent: 0,
+            bytes_received: 0,
+        })
+    }
+
+    async fn open_shadowsocks(
+        &self,
+        cfg: &ServerConfig,
+        session_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<ActiveConnection, WardenError> {
+        let params = SsParams::from_config_line(&cfg.config_line, &cfg.host, cfg.port)?;
+        let tunnel = crate::shadowsocks::SsTunnel::connect(params).await?;
+        self.apply_killswitch().await;
+        spawn_tunnel_runner_ss(tunnel, cfg.protocol.clone()).await;
+
+        Ok(ActiveConnection {
+            session_id: session_id.to_string(),
+            protocol: "ss".into(),
+            server: format!("{}:{}", cfg.host, cfg.port),
+            host: cfg.host.clone(),
+            port: cfg.port,
+            connected_at: now,
+            bytes_sent: 0,
+            bytes_received: 0,
+        })
+    }
+
+    async fn open_vmess(
+        &self,
+        cfg: &ServerConfig,
+        session_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<ActiveConnection, WardenError> {
+        let params = VmessParams::from_config_line(&cfg.config_line, &cfg.host, cfg.port)?;
+        let tunnel = crate::vmess::VmessTunnel::connect(params).await?;
+        self.apply_killswitch().await;
+        spawn_tunnel_runner_vmess(tunnel, cfg.protocol.clone()).await;
+
+        Ok(ActiveConnection {
+            session_id: session_id.to_string(),
+            protocol: "vmess".into(),
+            server: format!("{}:{}", cfg.host, cfg.port),
+            host: cfg.host.clone(),
+            port: cfg.port,
+            connected_at: now,
+            bytes_sent: 0,
+            bytes_received: 0,
+        })
+    }
+
+    async fn open_hysteria2(
+        &self,
+        cfg: &ServerConfig,
+        session_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<ActiveConnection, WardenError> {
+        let params = Hy2Params::from_config_line(&cfg.config_line, &cfg.host, cfg.port)?;
+        let tunnel = crate::hysteria2::Hy2Tunnel::connect(params).await?;
+        self.apply_killswitch().await;
+        spawn_tunnel_runner_hy2(tunnel, cfg.protocol.clone()).await;
+
+        Ok(ActiveConnection {
+            session_id: session_id.to_string(),
+            protocol: "hysteria2".into(),
             server: format!("{}:{}", cfg.host, cfg.port),
             host: cfg.host.clone(),
             port: cfg.port,
@@ -235,4 +374,56 @@ impl ProtocolManager {
             .output()
             .await;
     }
+}
+
+async fn spawn_tunnel_runner(mut tunnel: crate::tunnel::WireGuardTunnel, _protocol: String) {
+    tokio::spawn(async move {
+        let mut tun_opt = super::tun::try_open_tun().await;
+        loop {
+            if let Some(ref mut tun) = tun_opt {
+                if let Err(e) = tunnel.run(tun).await {
+                    warn!("tunnel run error: {:?}", e);
+                    tun_opt = super::tun::try_open_tun().await;
+                }
+            } else {
+                sleep(Duration::from_secs(1)).await;
+                tun_opt = super::tun::try_open_tun().await;
+            }
+        }
+    });
+}
+
+async fn spawn_tunnel_runner_vless(tunnel: VlessTunnel, _protocol: String) {
+    tokio::spawn(async move {
+        let mut tun_opt = super::tun::try_open_tun().await;
+        if let Some(tun) = tun_opt.as_mut() {
+            let _ = tunnel.run_proxy(tun).await;
+        } else {
+            sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
+
+async fn spawn_tunnel_runner_trojan(tunnel: TrojanTunnel, _protocol: String) {
+    tokio::spawn(async move {
+        let _ = tunnel.run_proxy().await;
+    });
+}
+
+async fn spawn_tunnel_runner_ss(tunnel: SsTunnel, _protocol: String) {
+    tokio::spawn(async move {
+        let _ = tunnel.run_proxy().await;
+    });
+}
+
+async fn spawn_tunnel_runner_vmess(tunnel: VmessTunnel, _protocol: String) {
+    tokio::spawn(async move {
+        let _ = tunnel.run_proxy().await;
+    });
+}
+
+async fn spawn_tunnel_runner_hy2(tunnel: Hy2Tunnel, _protocol: String) {
+    tokio::spawn(async move {
+        let _ = tunnel.run_proxy().await;
+    });
 }
