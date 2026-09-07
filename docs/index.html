@@ -199,7 +199,14 @@ h1.up { transform: translateY(-12vh) scale(0.6); opacity: 0.2; }
 <div class="logo" id="logo">
 <img src="assets/logo-bw.png" alt="Warden">
 </div>
-<h1 style="font-family: monospace; font-size: clamp(0.6rem, 1.2vw, 0.75rem); line-height: 1.1; color: var(--fg);">WARDEN</h1>
+<script src="https://cdn.jsdelivr.net/npm/ansi_up@5.1.0/ansi_up.js" defer></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+var ansi_up = new AnsiUp;
+var warden_ansi = '\x1b[38;2;0;0;0m████     █░ ▄▄▄       ██▀███  ▓█████▄ ▓█████  ███▄    █ \x1b[0m\n\x1b[38;2;0;0;0m▓█░ █ ░█░▒████▄    ▓██ ▒ ██▒▒██▀ ██▌▓█   ▀  ██ ▀█   █ \x1b[0m\n\x1b[38;2;0;0;0m▒█░ █ ░█ ░██▄▄▄▄██ ▒██▀▀█▄  ░██   █▌▒███   ▓██  ▀█ ██▒\x1b[0m\n\x1b[38;2;0;0;0m░█░ █ ░█ ▓█   ▓██▒░██▓ ▒██▒░▓█▄   ▌▒▓█  ▄ ▓██▒  ▐▌██▒\x1b[0m\n\x1b[38;2;0;0;0m░░██▒██▓  ▒▒   ▓▒█░░ ▒▓ ░▒▓░ ▒▒▓  ▒ ░▒████▒▒██░   ▓██░\x1b[0m\n\x1b[38;2;0;0;0m░ ▓░▒ ▒   ▒   ▒▒ ░  ░▒ ░ ▒░ ░ ▒  ▒  ░ ▒░ ░░ ▒░   ▒ ▒ \x1b[0m\n\x1b[38;2;0;0;0m  ▒ ░ ░    ░   ▒     ░░   ░  ░ ░  ░    ░  ░░ ░░   ░ ▒░\x1b[0m\n\x1b[38;2;0;0;0m  ░   ░        ░  ░   ░        ░       ░  ░      ░   ░ \x1b[0m\n\x1b[38;2;0;0;0m    ░          ░  ░   ░        ░       ░  ░         ░ \x1b[0m';
+document.getElementById('ascii-title').innerHTML = ansi_up.ansi_to_html(warden_ansi);
+});</script>
+<h1 id="ascii-title" style="font-family: monospace; font-size: clamp(0.5rem, 1vw, 0.7rem); line-height: 1.1; color: var(--fg);"></h1>
 <p class="lead">A VPN that finds its own servers, ranks them by threat, and rotates without asking.</p>
 <p class="links">
 <a href="#" onclick="show('install'); return false;">install</a>
