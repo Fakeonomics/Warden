@@ -156,16 +156,19 @@ impl App {
     }
 
     fn draw(&mut self, f: &mut ratatui::Frame) {
-        // Layout: fixed-size panels + bounded log area
+        let total_h = f.area().height;
+        // Hard-allocate a 8-row strip for the log. Header (3) + footer (3) +
+        // log (8) = 14 fixed. Body takes everything else.
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),    // header
-                Constraint::Min(10),     // body (menu + dashboard)
+                Constraint::Min(8),      // body
                 Constraint::Length(3),    // footer
-                Constraint::Length(8),    // log (FIXED, no overflow)
+                Constraint::Length(8),    // log: exactly 8 lines (incl. border)
             ])
             .split(f.area());
+        let _ = total_h; // silence unused
 
         let wd_label = if self.watchdog_enabled { "● watch" } else { "○ watch" };
         let au_label = if self.auto_update { "● auto" } else { "○ auto" };
@@ -229,7 +232,7 @@ impl App {
 
         let right = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(7), Constraint::Min(3)])
+            .constraints([Constraint::Min(6), Constraint::Min(2)])
             .split(body[1]);
 
         self.draw_dashboard(f, right[0]);
@@ -273,37 +276,43 @@ impl App {
         ]));
         f.render_widget(stats, chunks[2]);
 
-        // LOG: fixed-height list with scrollbar. Auto-scrolls to bottom
-        // (Bounded — log never overflows layout.)
         self.draw_log(f, chunks[3]);
     }
 
     fn draw_log(&self, f: &mut ratatui::Frame, area: Rect) {
+        // area is exactly 8 rows tall (incl. top+bottom borders).
+        // Inner area = 6 lines of log.
         let logs = self.snapshot_logs();
-        let visible_height = area.height.saturating_sub(2) as usize; // minus borders
+        let inner_h = area.height.saturating_sub(2) as usize; // 6
+        let width = area.width.saturating_sub(3) as usize; // -2 borders, -1 scrollbar
         let total = logs.len();
-        // show last N entries, auto-follow
-        let start = total.saturating_sub(visible_height);
+        let start = total.saturating_sub(inner_h);
+        // Each ListItem is exactly one line; truncate with elide so wrapping
+        // cannot stretch the layout.
         let items: Vec<ListItem> = logs
             .iter()
             .skip(start)
-            .map(|l| ListItem::new(Line::from(l.clone())))
+            .map(|l| {
+                let truncated = if l.chars().count() > width {
+                    let mut s: String = l.chars().take(width.saturating_sub(1)).collect();
+                    s.push('…');
+                    s
+                } else {
+                    l.clone()
+                };
+                ListItem::new(Line::from(Span::raw(truncated)))
+            })
             .collect();
-        let mut state = ListState::default();
-        state.select(Some(items.len().saturating_sub(1)));
-        let log_block = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .title(Span::styled(
-                        format!(" log ({} lines) ", total),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray));
-        f.render_stateful_widget(log_block, area, &mut state);
-        // Scrollbar on the right
-        if total > visible_height {
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title(Span::styled(
+                    format!(" log ({} lines) ", total),
+                    Style::default().fg(Color::DarkGray),
+                )),
+        );
+        f.render_widget(list, area);
+        if total > inner_h {
             let mut sb_state = ScrollbarState::new(total).position(start);
             f.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight),
