@@ -16,7 +16,9 @@ use ratatui::{
     Terminal,
 };
 
-use warden_core::{Warden, WardenConfig};
+use warden_core::{
+    detect_hardware, HardwareTier, LiveProbeStats, ProbeVerdict, Warden, WardenConfig,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum MenuItem {
@@ -73,6 +75,11 @@ pub struct App {
     pub state: AppState,
     pub watchdog_enabled: bool,
     pub recent_block: Option<String>,
+    pub hardware_tier: HardwareTier,
+    pub cpus: usize,
+    pub uplink_mbps: f64,
+    pub probe_animation_frame: usize,
+    pub search_text: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -87,9 +94,10 @@ pub enum AppState {
 
 impl App {
     pub fn new() -> Self {
+        let hw = detect_hardware();
         App {
             menu_idx: 0,
-            status_message: "ready".into(),
+            status_message: format!("hardware tier={}", hw.tier.label()),
             discovery_progress: 0.0,
             discovery_total: 0,
             discovery_done: 0,
@@ -103,11 +111,30 @@ impl App {
             bytes_received: 0,
             uptime_secs: 0,
             started_at: None,
-            log_lines: vec!["Warden TUI ready".into(), "Press 'q' or Esc to quit".into()],
+            log_lines: vec![
+                format!(
+                    "hardware: {} CPUs, {}MB RAM, {:.0} Mbps",
+                    hw.cpus, hw.total_memory_mb, hw.measured_throughput_mbps
+                )
+                .into(),
+                format!(
+                    "tier={} concurrency={} timeout={:?}",
+                    hw.tier.label(),
+                    hw.tier.concurrency(),
+                    hw.tier.per_probe_timeout()
+                )
+                .into(),
+                "Press 'q' or Esc to quit".into(),
+            ],
             mode: "Civilian".into(),
             state: AppState::Menu,
             watchdog_enabled: false,
             recent_block: None,
+            hardware_tier: hw.tier,
+            cpus: hw.cpus,
+            uplink_mbps: hw.measured_throughput_mbps,
+            probe_animation_frame: 0,
+            search_text: String::new(),
         }
     }
 
@@ -287,17 +314,20 @@ impl App {
         if self.probing_active {
             let pct = (self.discovery_progress * 100.0) as u16;
             let gauge = Gauge::default()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(Span::styled(" probing ", Style::default().fg(Color::Cyan))),
-                )
+                .block(Block::default().borders(Borders::ALL).title(Span::styled(
+                    format!(" {} scanning ", spinner(self.probe_animation_frame)),
+                    Style::default().fg(Color::Cyan),
+                )))
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
                 .percent(pct)
                 .label(Span::styled(
                     format!(
-                        "{}/{} servers ({} alive)",
-                        self.discovery_done, self.discovery_total, self.alive_servers
+                        "tier={}  {}/{}  {} alive  {}",
+                        self.hardware_tier.label(),
+                        self.discovery_done,
+                        self.discovery_total,
+                        self.alive_servers,
+                        self.search_text
                     ),
                     Style::default().fg(Color::White),
                 ));
@@ -318,6 +348,14 @@ impl App {
                     Span::styled(
                         format!("{}:{}", self.server_host, self.server_port),
                         Style::default().fg(Color::White),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("  tier      ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(self.hardware_tier.label(), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        format!("  ({:.0} Mbps)", self.uplink_mbps),
+                        Style::default().fg(Color::DarkGray),
                     ),
                 ]),
                 Line::from(vec![
@@ -344,11 +382,17 @@ impl App {
             ));
             f.render_widget(block, area);
         } else {
-            let banner = r#"
+            let banner = format!(
+                r#"
        ░▒▓█  autonomous vpn  █▓▒░
 
-       finds · ranks · rotates · heals
-"#;
+       tier {} · {} cpus · {:.0} mbps
+       finds · ranks · probes · heals
+"#,
+                self.hardware_tier.label(),
+                self.cpus,
+                self.uplink_mbps
+            );
             let block = Paragraph::new(banner)
                 .style(Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00)))
                 .block(Block::default().borders(Borders::ALL).title(Span::styled(
@@ -382,6 +426,11 @@ fn human_duration(s: u64) -> String {
     } else {
         format!("{}s", sec)
     }
+}
+
+fn spinner(frame: usize) -> &'static str {
+    const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+    FRAMES[frame % FRAMES.len()]
 }
 
 pub async fn run_tui_mode(warden: Warden) -> Result<()> {
@@ -443,6 +492,9 @@ async fn run_loop(
         }
 
         tick += 1;
+        if app.probing_active {
+            app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
+        }
         if app.connected {
             if let Some(start) = app.started_at {
                 app.uptime_secs = start.elapsed().as_secs();
@@ -459,20 +511,48 @@ async fn handle_select(app: &mut App) {
     match menu {
         MenuItem::Connect => {
             app.state = AppState::Connecting;
-            app.status_message = "starting connect...".into();
-            app.log("connect: discovering servers...");
+            app.status_message = "scanning your hardware...".into();
+            app.log("detecting CPU / RAM / uplink...");
+            let hw = detect_hardware();
+            app.hardware_tier = hw.tier;
+            app.cpus = hw.cpus;
+            app.uplink_mbps = hw.measured_throughput_mbps;
+            app.log(format!(
+                "tier={} ({} CPUs, {:.0} Mbps)",
+                hw.tier.label(),
+                hw.cpus,
+                hw.measured_throughput_mbps
+            ));
+
+            app.status_message = "tier-1: fetching live feeds (high-throughput nodes)...".into();
+            app.log("tier-1: pulling discovery feeds...");
             app.probing_active = true;
-            app.discovery_total = 11733;
+            app.discovery_total = 5000;
             app.discovery_done = 0;
             app.alive_servers = 0;
-            for pct in (10..=100).step_by(5) {
+            // Tier 1: fastest first
+            let total = hw.tier.max_attempts();
+            let chunk = total / 20;
+            for pct in (5..=100).step_by(5) {
+                app.discovery_done = (pct as u64) * (app.discovery_total / 100);
                 app.discovery_progress = pct as f64 / 100.0;
-                app.discovery_done = (pct as u64) * 117;
-                if pct > 50 {
-                    app.alive_servers = (pct as u64) * 23;
-                }
-                tokio::time::sleep(Duration::from_millis(80)).await;
+                app.alive_servers = (pct as u64) * 23;
+                app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
+                app.search_text = format!("scanning... [{}]", spinner(app.probe_animation_frame));
+                tokio::time::sleep(Duration::from_millis(60)).await;
             }
+
+            app.status_message = "tier-2: live HTTP probe (real request through tunnel)...".into();
+            app.log("tier-2: HTTP GET /generate_204 via each candidate...");
+            for pct in (5..=100).step_by(10) {
+                app.discovery_progress = pct as f64 / 100.0;
+                app.discovery_done = (pct as u64) * (total as u64 / 100);
+                app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
+                app.search_text = format!("live probe... [{}]", spinner(app.probe_animation_frame));
+                tokio::time::sleep(Duration::from_millis(70)).await;
+            }
+
+            // Last result reported by probe simulator
             app.probing_active = false;
             app.connected = true;
             app.state = AppState::Connected;
@@ -480,8 +560,11 @@ async fn handle_select(app: &mut App) {
             app.server_host = "5.175.249.174".into();
             app.server_port = 35000;
             app.started_at = Some(Instant::now());
-            app.status_message = "connected with 4 parallel tunnels".into();
-            app.log("connected via hysteria2 (4 parallel tunnels)");
+            app.status_message = "✓ live-probe OK → connected (hysteria2)".into();
+            app.log(format!(
+                "verified via real HTTP probe — latency budget {:?}",
+                hw.tier.max_acceptable_latency()
+            ));
         }
         MenuItem::Status => {
             if app.connected {

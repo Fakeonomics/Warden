@@ -7,6 +7,7 @@ pub mod decision;
 pub mod discovery;
 pub mod error;
 pub mod hysteria2;
+pub mod live_probe;
 pub mod mind;
 pub mod opsec;
 pub mod pool;
@@ -15,6 +16,7 @@ pub mod protocol_helpers;
 pub mod quality;
 pub mod shadowsocks;
 pub mod ternary;
+pub mod tier_probe;
 pub mod traffic_watch;
 pub mod trojan;
 pub mod tun;
@@ -22,6 +24,12 @@ pub mod tunnel;
 pub mod updater;
 pub mod vless;
 pub mod vmess;
+
+pub use live_probe::{find_first_alive, LiveProbeStats, ProbeReport, ProbeVerdict};
+pub use tier_probe::{
+    detect_hardware, detect_tier, detect_uplink, measure_uplink_approx, HardwareReport,
+    HardwareTier, UplinkKind,
+};
 
 pub use api::{ApiClient, ServerConfig};
 pub use config::*;
