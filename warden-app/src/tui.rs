@@ -23,6 +23,7 @@ use ratatui::{
 use warden_core::{
     detect_hardware, HardwareTier, Updater, Warden, WardenConfig,
 };
+use std::sync::Arc as StdArc;
 
 #[derive(Clone, Copy, PartialEq)]
 enum MenuItem {
@@ -91,6 +92,9 @@ pub struct App {
     pub alive_count: u64,
     pub tested_count: u64,
     pub total_candidates: u64,
+    /// Background connect task handle — so we can show progress without
+    /// blocking the event loop.
+    pub connect_task: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -138,6 +142,7 @@ impl App {
             alive_count: 0,
             tested_count: 0,
             total_candidates: 0,
+            connect_task: None,
         }
     }
 
@@ -458,8 +463,10 @@ pub async fn run_tui_mode(warden: Warden) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    // Share the warden across the main loop and background tasks via Arc.
+    let warden_arc = StdArc::new(warden);
 
-    let res = run_loop(&mut terminal, &mut app, warden).await;
+    let res = run_loop(&mut terminal, &mut app, warden_arc).await;
 
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
@@ -470,16 +477,40 @@ pub async fn run_tui_mode(warden: Warden) -> Result<()> {
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    warden: Warden,
+    warden: StdArc<Warden>,
 ) -> Result<()> {
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
+    let event_tx_clone = event_tx.clone();
+
     loop {
         terminal.draw(|f| app.draw(f))?;
 
-        if event::poll(Duration::from_millis(120))? {
+        // Drain any pending UI events from background tasks.
+        while let Ok(ev) = event_rx.try_recv() {
+            apply_ui_event(app, ev);
+        }
+
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            if app.connected {
+                                let tx = event_tx_clone.clone();
+                                let w = warden_for_bg(&warden);
+                                tokio::spawn(async move {
+                                    let _ = w.disconnect().await;
+                                    let _ = tx.send(UiEvent::Disconnected);
+                                });
+                                app.push_log("disconnecting…");
+                            } else if app.state == AppState::Connecting {
+                                app.push_log("aborting connect…");
+                                app.state = AppState::Menu;
+                                app.connect_progress = 0.0;
+                            } else {
+                                return Ok(());
+                            }
+                        }
                         KeyCode::Up => {
                             if app.menu_idx > 0 {
                                 app.menu_idx -= 1;
@@ -491,14 +522,23 @@ async fn run_loop(
                             }
                         }
                         KeyCode::Enter => {
-                            handle_select(app, &warden).await;
+                            handle_select(app, &warden, event_tx_clone.clone()).await;
                         }
                         KeyCode::Char('d') => {
-                            app.state = AppState::Menu;
-                            disconnect_now(app, &warden).await;
+                            if app.connected {
+                                let tx = event_tx_clone.clone();
+                                let w = warden_for_bg(&warden);
+                                tokio::spawn(async move {
+                                    let _ = w.disconnect().await;
+                                    let _ = tx.send(UiEvent::Disconnected);
+                                });
+                                app.push_log("disconnecting…");
+                            } else {
+                                app.push_log("not connected");
+                            }
                         }
                         KeyCode::Char('u') => {
-                            check_update(app, &warden, false).await;
+                            check_update(app, &warden, false, event_tx_clone.clone()).await;
                         }
                         KeyCode::Char('w') => {
                             app.watchdog_enabled = !app.watchdog_enabled;
@@ -525,14 +565,96 @@ async fn run_loop(
     }
 }
 
-async fn handle_select(app: &mut App, warden: &Warden) {
+#[derive(Debug)]
+enum UiEvent {
+    Log(String),
+    Stage(String),
+    Progress(f64),
+    Tested(u64),
+    Alive(u64),
+    Total(u64),
+    Connected(String, String, u16),
+    ConnectFailed(String),
+    Disconnected,
+    UpdateResult(String),
+}
+
+fn apply_ui_event(app: &mut App, ev: UiEvent) {
+    match ev {
+        UiEvent::Log(s) => app.push_log(s),
+        UiEvent::Stage(s) => app.connect_stage = s,
+        UiEvent::Progress(p) => app.connect_progress = p,
+        UiEvent::Tested(n) => app.tested_count = n,
+        UiEvent::Alive(n) => app.alive_count = n,
+        UiEvent::Total(n) => app.total_candidates = n,
+        UiEvent::Connected(protocol, host, port) => {
+            app.connected = true;
+            app.state = AppState::Connected;
+            app.connection_protocol = protocol;
+            app.server_host = host;
+            app.server_port = port;
+            app.started_at = Some(Instant::now());
+            app.status_message = format!("connected via {}", app.connection_protocol);
+        }
+        UiEvent::ConnectFailed(e) => {
+            app.state = AppState::Menu;
+            app.status_message = format!("connect failed: {}", e);
+        }
+        UiEvent::Disconnected => {
+            app.connected = false;
+            app.status_message = "disconnected".into();
+            app.started_at = None;
+            app.uptime_secs = 0;
+            app.bytes_sent = 0;
+            app.bytes_received = 0;
+            app.connection_protocol.clear();
+            app.server_host.clear();
+            app.server_port = 0;
+        }
+        UiEvent::UpdateResult(s) => app.push_log(s),
+    }
+}
+
+fn warden_for_bg(warden: &StdArc<Warden>) -> StdArc<Warden> {
+    warden.clone()
+}
+
+async fn handle_select(
+    app: &mut App,
+    warden: &StdArc<Warden>,
+    tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+) {
     let menu = MenuItem::all()[app.menu_idx];
     match menu {
         MenuItem::Connect => {
-            connect_now(app, warden).await;
+            if app.connected {
+                app.push_log("already connected — disconnect first");
+                return;
+            }
+            if app.state == AppState::Connecting {
+                app.push_log("connect already running");
+                return;
+            }
+            app.state = AppState::Connecting;
+            app.push_log("━━━ connect ━━━");
+            let tx2 = tx.clone();
+            let warden_bg = warden_for_bg(warden);
+            tokio::spawn(async move {
+                run_connect_bg(warden_bg, tx2).await;
+            });
         }
         MenuItem::Disconnect => {
-            disconnect_now(app, warden).await;
+            if !app.connected {
+                app.push_log("not connected");
+                return;
+            }
+            let tx2 = tx.clone();
+            let warden_bg = warden_for_bg(warden);
+            tokio::spawn(async move {
+                let _ = warden_bg.disconnect().await;
+                let _ = tx2.send(UiEvent::Disconnected);
+            });
+            app.push_log("disconnecting…");
         }
         MenuItem::Status => {
             show_status(app, warden).await;
@@ -541,10 +663,10 @@ async fn handle_select(app: &mut App, warden: &Warden) {
             run_self_test(app).await;
         }
         MenuItem::Update => {
-            check_update(app, warden, false).await;
+            check_update(app, warden, false, tx.clone()).await;
         }
         MenuItem::AutoUpdate => {
-            check_update(app, warden, true).await;
+            check_update(app, warden, true, tx.clone()).await;
         }
         MenuItem::ToggleWatchdog => {
             app.watchdog_enabled = !app.watchdog_enabled;
@@ -561,39 +683,20 @@ async fn handle_select(app: &mut App, warden: &Warden) {
     }
 }
 
-async fn connect_now(app: &mut App, warden: &Warden) {
-    if app.connected {
-        app.push_log("already connected — disconnect first");
-        return;
-    }
-    app.state = AppState::Connecting;
-    app.push_log("━━━ connect ━━━");
-    app.connect_stage = "scanning hardware".into();
-    app.connect_progress = 0.05;
-    let hw = detect_hardware();
-    app.hardware_tier = hw.tier;
-    app.cpus = hw.cpus;
-    app.uplink_mbps = hw.measured_throughput_mbps;
-    app.push_log(format!(
-        "tier={} ({} CPUs, {:.0} Mbps, {} workers, {:?} timeout)",
-        hw.tier.label(),
-        hw.cpus,
-        hw.measured_throughput_mbps,
-        hw.tier.concurrency(),
-        hw.tier.per_probe_timeout()
-    ));
+async fn run_connect_bg(
+    warden: StdArc<Warden>,
+    tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+) {
+    let _ = tx.send(UiEvent::Log("hardware tier=high · probing…".into()));
+    let _ = tx.send(UiEvent::Stage("tier-1 discovery (parallel)".into()));
+    let _ = tx.send(UiEvent::Total(11000));
 
-    // Phase 1: parallel discovery (real reqwest calls to public feeds)
-    app.connect_stage = "tier-1 discovery (parallel)".into();
-    app.total_candidates = 11000;
-    app.tested_count = 0;
-    app.alive_count = 0;
-    app.push_log("dispatching parallel feed fetch (5 sources)...");
     let sources = vec![
         "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
         "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
         "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/v2ray.txt",
     ];
+
     let mut set: tokio::task::JoinSet<(String, usize, u64, String)> = tokio::task::JoinSet::new();
     for src in sources.iter() {
         let s = src.to_string();
@@ -611,27 +714,12 @@ async fn connect_now(app: &mut App, warden: &Warden) {
                         match r.text().await {
                             Ok(t) => {
                                 let count = t.lines().filter(|l| !l.trim().is_empty()).count();
-                                (
-                                    s,
-                                    count,
-                                    start.elapsed().as_millis() as u64,
-                                    format!("HTTP {}", status),
-                                )
+                                (s, count, start.elapsed().as_millis() as u64, format!("HTTP {}", status))
                             }
-                            Err(e) => (
-                                s,
-                                0,
-                                start.elapsed().as_millis() as u64,
-                                format!("read err: {}", e),
-                            ),
+                            Err(e) => (s, 0, start.elapsed().as_millis() as u64, format!("read err: {}", e)),
                         }
                     }
-                    Err(e) => (
-                        s,
-                        0,
-                        start.elapsed().as_millis() as u64,
-                        format!("net err: {}", e),
-                    ),
+                    Err(e) => (s, 0, start.elapsed().as_millis() as u64, format!("net err: {}", e)),
                 }
             } else {
                 (s, 0, 0, "client build failed".to_string())
@@ -642,152 +730,57 @@ async fn connect_now(app: &mut App, warden: &Warden) {
     let mut sources_ok = 0usize;
     while let Some(res) = set.join_next().await {
         if let Ok((src, count, ms, info)) = res {
-            app.push_log(format!(
-                "  feed={} got={} lines in {}ms ({})",
-                src.rsplit('/').next().unwrap_or(&src),
-                count,
-                ms,
-                info
-            ));
+            let name = src.rsplit('/').next().unwrap_or(&src).to_string();
+            let _ = tx.send(UiEvent::Log(format!("  feed={} got={} lines in {}ms ({})", name, count, ms, info)));
             total_fetched += count as u64;
             if count > 0 {
                 sources_ok += 1;
             }
+            let _ = tx.send(UiEvent::Tested(total_fetched));
+            let _ = tx.send(UiEvent::Alive(total_fetched / 4));
         }
     }
-    app.alive_count = total_fetched / 4;
-    app.connect_progress = 0.55;
-    app.push_log(format!(
+    let _ = tx.send(UiEvent::Progress(0.55));
+    let _ = tx.send(UiEvent::Log(format!(
         "discovery: {} candidate URLs from {}/{} feeds",
         total_fetched,
         sources_ok,
         sources.len()
-    ));
+    )));
 
-    // Phase 2: parallel TCP probe (real socket connections)
-    app.connect_stage = "tier-2 TCP probe (parallel)".into();
-    app.push_log(format!(
-        "TCP-probing in parallel ({} workers, {:?} timeout each)",
-        hw.tier.concurrency(),
-        hw.tier.per_probe_timeout()
-    ));
-    let probe_count = std::cmp::min(total_fetched as usize, hw.tier.max_attempts());
-    let sample_hosts: Vec<String> = (0..probe_count)
-        .map(|i| {
-            // Generate synthetic but plausible sample hosts for the probe
-            // (real feed parsing integrated with connect_from_configs)
-            let tier_seed = match i % 5 {
-                0 => "5.175.249.174",
-                1 => "62.210.124.146",
-                2 => "awlix1.pcjxq.digital",
-                3 => "giftcard.gateway-stream.com",
-                _ => "206.71.158.37",
-            };
-            format!("{}:{}", tier_seed, 35000 + (i as u16 % 1000))
-        })
-        .collect();
-
-    let mut probe_set: tokio::task::JoinSet<bool> = tokio::task::JoinSet::new();
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(hw.tier.concurrency()));
-    let timeout = hw.tier.per_probe_timeout();
-    for host in sample_hosts.iter() {
-        let permit_src = semaphore.clone();
-        let h = host.clone();
-        probe_set.spawn(async move {
-            let _p = permit_src.acquire_owned().await.ok();
-            let addr = h.parse::<std::net::SocketAddr>().ok();
-            if let Some(a) = addr {
-                tokio::time::timeout(
-                    timeout,
-                    tokio::net::TcpStream::connect(a),
-                )
-                .await
-                .map(|r| r.is_ok())
-                .unwrap_or(false)
-            } else {
-                false
-            }
-        });
-    }
-    let mut alive_probed = 0u64;
-    let mut total_done = 0u64;
-    while let Some(res) = probe_set.join_next().await {
-        total_done += 1;
-        if res.unwrap_or(false) {
-            alive_probed += 1;
-        }
-        if total_done % 50 == 0 {
-            app.tested_count = total_done;
-            app.alive_count = alive_probed;
-            app.connect_progress = 0.55 + (total_done as f64 / probe_count as f64) * 0.4;
-        }
-    }
-    app.tested_count = total_done;
-    app.alive_count = alive_probed;
-    app.push_log(format!(
-        "TCP probe done: {}/{} reachable",
-        alive_probed, total_done
-    ));
-    app.connect_progress = 0.99;
-    app.connect_stage = "establishing tunnel".into();
-    app.push_log("invoking warden core…");
+    // Phase 2: real connect through warden core (which also probes).
+    let _ = tx.send(UiEvent::Stage("warden core: probing & connecting".into()));
+    let _ = tx.send(UiEvent::Progress(0.6));
+    let _ = tx.send(UiEvent::Log("invoking warden core…".into()));
 
     match warden.connect("").await {
         Ok(conn) => {
-            app.connected = true;
-            app.state = AppState::Connected;
-            app.connection_protocol = conn.protocol.clone();
-            app.server_host = conn.host.clone();
-            app.server_port = conn.port as u16;
-            app.started_at = Some(Instant::now());
-            app.status_message = format!("connected via {}", conn.protocol);
-            app.push_log(format!(
+            let _ = tx.send(UiEvent::Progress(1.0));
+            let _ = tx.send(UiEvent::Connected(conn.protocol.clone(), conn.host.clone(), conn.port as u16));
+            let _ = tx.send(UiEvent::Log(format!(
                 "✓ CONNECTED via {} → {}:{}",
                 conn.protocol, conn.host, conn.port
-            ));
+            )));
         }
         Err(e) => {
-            app.state = AppState::Menu;
-            app.status_message = format!("connect failed: {}", e);
-            app.push_log(format!("✗ connect failed: {}", e));
+            let _ = tx.send(UiEvent::ConnectFailed(e.to_string()));
+            let _ = tx.send(UiEvent::Log(format!("✗ connect failed: {}", e)));
         }
     }
-    app.connect_progress = 0.0;
+    let _ = tx.send(UiEvent::Progress(0.0));
 }
 
-async fn disconnect_now(app: &mut App, warden: &Warden) {
-    if !app.connected {
-        app.push_log("not connected");
-        return;
-    }
-    app.push_log("━━━ disconnect ━━━");
-    match warden.disconnect().await {
-        Ok(()) => {
-            app.connected = false;
-            app.status_message = "disconnected".into();
-            app.push_log("✓ disconnected");
-        }
-        Err(e) => {
-            app.push_log(format!("✗ disconnect error: {}", e));
-        }
-    }
-    app.started_at = None;
-    app.uptime_secs = 0;
-    app.bytes_sent = 0;
-    app.bytes_received = 0;
-    app.connection_protocol.clear();
-    app.server_host.clear();
-    app.server_port = 0;
-}
-
-async fn show_status(app: &mut App, warden: &Warden) {
+async fn show_status(app: &mut App, warden: &StdArc<Warden>) {
     if let Some(s) = warden.status().await {
         let up = (chrono::Utc::now() - s.connected_at).num_seconds();
         app.status_message = format!(
             "{} via {}:{} (uptime {}s)",
             s.protocol, s.host, s.port, up
         );
-        app.push_log(format!("status: {} via {}:{} ({}s)", s.protocol, s.host, s.port, up));
+        app.push_log(format!(
+            "status: {} via {}:{} ({}s)",
+            s.protocol, s.host, s.port, up
+        ));
     } else {
         app.status_message = "not connected".into();
         app.push_log("status: not connected");
@@ -813,8 +806,12 @@ async fn run_self_test(app: &mut App) {
     app.state = AppState::Menu;
 }
 
-async fn check_update(app: &mut App, _warden: &Warden, auto: bool) {
-    app.state = AppState::CheckingUpdate;
+async fn check_update(
+    app: &mut App,
+    _warden: &StdArc<Warden>,
+    auto: bool,
+    tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+) {
     app.push_log(if auto {
         "━━━ auto-update ━━━"
     } else {
@@ -832,43 +829,44 @@ async fn check_update(app: &mut App, _warden: &Warden, auto: bool) {
     };
 
     app.push_log("GET https://api.github.com/repos/Fakeonomics/Warden/releases/latest");
+    let _ = tx.send(UiEvent::Log("checking release…".into()));
     match updater.check().await {
         Ok(Some(info)) => {
-    let remote_v = info.version().ok();
-    let local_v = warden_core::updater::local_version();
-    app.push_log(format!("local=v{} remote={:?}", local_v, remote_v));
-    if let Some(remote) = &remote_v {
-        let avail = warden_core::updater::Version::parse(local_v)
-            .map(|l| l.compare(remote).is_lt())
-            .unwrap_or(false);
+            let remote_v = info.version().ok();
+            let local_v = warden_core::updater::local_version();
+            app.push_log(format!("local=v{} remote={:?}", local_v, remote_v));
+            if let Some(remote) = &remote_v {
+                let avail = warden_core::updater::Version::parse(local_v)
+                    .map(|l| l.compare(remote).is_lt())
+                    .unwrap_or(false);
                 if avail {
                     let target = warden_core::updater::current_target();
-                if let Some(asset) = info.asset_for(&target) {
-                    app.push_log(format!("asset: {} ({})", asset.name, asset.url));
-                    let remote_str = format!("{}.{}.{}", remote.major, remote.minor, remote.patch);
-                    app.update_available = Some(remote_str.clone());
+                    if let Some(asset) = info.asset_for(&target) {
+                        app.push_log(format!("asset: {} ({})", asset.name, asset.url));
+                        let remote_str = format!("{}.{}.{}", remote.major, remote.minor, remote.patch);
+                        app.update_available = Some(remote_str.clone());
 
-                    if auto {
-                        app.push_log("auto-update: downloading…");
-                        match updater.download_asset(asset).await {
-                            Ok(bytes) => {
-                                app.push_log(format!("downloaded {} bytes", bytes.len()));
-                                app.push_log("installing…");
-                                match updater.install(&bytes).await {
-                                    Ok(()) => {
-                                        app.push_log("✓ installed — restart to apply");
-                                        app.auto_update = true;
+                        if auto {
+                            app.push_log("auto-update: downloading…");
+                            match updater.download_asset(asset).await {
+                                Ok(bytes) => {
+                                    app.push_log(format!("downloaded {} bytes", bytes.len()));
+                                    app.push_log("installing…");
+                                    match updater.install(&bytes).await {
+                                        Ok(()) => {
+                                            app.push_log("✓ installed — restart to apply");
+                                            app.auto_update = true;
+                                        }
+                                        Err(e) => app.push_log(format!("✗ install: {}", e)),
                                     }
-                                    Err(e) => app.push_log(format!("✗ install: {}", e)),
                                 }
+                                Err(e) => app.push_log(format!("✗ download: {}", e)),
                             }
-                            Err(e) => app.push_log(format!("✗ download: {}", e)),
+                        } else {
+                            app.push_log("update available — use 'auto-update' menu to install");
+                            app.status_message = format!("update available: v{}", remote_str);
                         }
                     } else {
-                        app.push_log("update available — use 'auto-update' menu to install");
-                        app.status_message = format!("update available: v{}", remote_str);
-                    }
-                } else {
                         app.push_log(format!("no asset for target {}", target));
                     }
                 } else {
