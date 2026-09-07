@@ -127,3 +127,28 @@ async fn real_speed_test_returns_mbps() {
     assert!(s.mbps > 0.0, "expected positive Mbps, got {}", s.mbps);
     assert!(s.bytes > 0);
 }
+
+#[test]
+fn hardware_tier_labels_unique() {
+    let labels = [
+        warden_core::HardwareTier::Low,
+        warden_core::HardwareTier::Mid,
+        warden_core::HardwareTier::High,
+        warden_core::HardwareTier::Ultra,
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for t in labels.iter() {
+        assert!(seen.insert(t.label()), "duplicate label: {}", t.label());
+    }
+}
+
+#[test]
+fn tier_concurrency_strictly_increases() {
+    use warden_core::HardwareTier::*;
+    let order = [Low, Mid, High, Ultra];
+    for win in order.windows(2) {
+        assert!(win[1].concurrency() > win[0].concurrency());
+        assert!(win[0].per_probe_timeout() > win[1].per_probe_timeout());
+        assert!(win[0].max_acceptable_latency() > win[1].max_acceptable_latency());
+    }
+}

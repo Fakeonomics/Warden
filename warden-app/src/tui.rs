@@ -32,8 +32,10 @@ enum MenuItem {
     Status,
     SelfTest,
     Update,
-    ToggleWatchdog,
     AutoUpdate,
+    ToggleWatchdog,
+    SpeedTest,
+    Settings,
     Quit,
 }
 
@@ -47,11 +49,13 @@ impl MenuItem {
             MenuItem::Update => "↑  check update",
             MenuItem::AutoUpdate => "⟳  auto-update",
             MenuItem::ToggleWatchdog => "⏱  toggle watchdog",
+            MenuItem::SpeedTest => "↯  speed test",
+            MenuItem::Settings => "⚙  settings",
             MenuItem::Quit => "✕  quit",
         }
     }
 
-    fn all() -> [MenuItem; 8] {
+    fn all() -> [MenuItem; 10] {
         [
             MenuItem::Connect,
             MenuItem::Disconnect,
@@ -60,6 +64,8 @@ impl MenuItem {
             MenuItem::Update,
             MenuItem::AutoUpdate,
             MenuItem::ToggleWatchdog,
+            MenuItem::SpeedTest,
+            MenuItem::Settings,
             MenuItem::Quit,
         ]
     }
@@ -86,6 +92,11 @@ pub struct App {
     pub uplink_mbps: f64,
     pub measured_mbps: f64,
     pub auto_update: bool,
+    pub settings_open: bool,
+    pub settings_idx: usize,
+    pub settings_tier_override: Option<HardwareTier>,
+    pub settings_max_attempts: usize,
+    pub settings_aggressive_rotation: bool,
     pub update_available: Option<String>,
     pub connect_progress: f64,
     pub connect_stage: String,
@@ -136,6 +147,11 @@ impl App {
             cpus: hw.cpus,
             uplink_mbps: hw.measured_throughput_mbps,
             measured_mbps: 0.0,
+            settings_open: false,
+            settings_idx: 0,
+            settings_tier_override: None,
+            settings_max_attempts: hw.tier.max_attempts(),
+            settings_aggressive_rotation: false,
             auto_update: false,
             update_available: None,
             connect_progress: 0.0,
@@ -284,6 +300,87 @@ impl App {
         f.render_widget(stats, chunks[2]);
 
         self.draw_log(f, chunks[3]);
+
+        // Settings overlay
+        if self.settings_open {
+            self.draw_settings_overlay(f, f.area());
+        }
+    }
+
+    fn draw_settings_overlay(&self, f: &mut ratatui::Frame, area: Rect) {
+        let popup = Rect {
+            x: area.width.saturating_sub(50) / 2,
+            y: area.height.saturating_sub(12) / 2,
+            width: 50.min(area.width),
+            height: 12.min(area.height),
+        };
+        f.render_widget(Clear, popup);
+
+        let tier = self.settings_tier_override.unwrap_or(self.hardware_tier);
+        let lines = vec![
+            Line::from(Span::styled(
+                " ⚙  settings  (←/→ select · enter apply · esc close)",
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(if self.settings_idx == 0 { "▶ " } else { "  " },
+                    Style::default().fg(Color::Yellow)),
+                Span::styled("tier override: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("[{}]", tier.label()),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("  (auto/low/mid/high/ultra)", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled(if self.settings_idx == 1 { "▶ " } else { "  " },
+                    Style::default().fg(Color::Yellow)),
+                Span::styled("max attempts: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{}", self.settings_max_attempts),
+                    Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled(if self.settings_idx == 2 { "▶ " } else { "  " },
+                    Style::default().fg(Color::Yellow)),
+                Span::styled("aggressive rotation: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if self.settings_aggressive_rotation { "ON" } else { "OFF" },
+                    Style::default().fg(if self.settings_aggressive_rotation {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  hardware detection:",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(format!(
+                "  {} cpus · {} MB RAM · {} Mbps",
+                self.cpus,
+                std::env::var("WARDEN_TEST_MEM_MB").unwrap_or_else(|_| "?".into()),
+                self.uplink_mbps as u32
+            )),
+            Line::from(Span::styled(
+                "  measured (from last speed test):",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(format!(
+                "  {:.1} Mbps",
+                if self.measured_mbps > 0.0 {
+                    self.measured_mbps
+                } else {
+                    self.uplink_mbps
+                }
+            )),
+        ];
+        let block = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(Span::styled(
+                " settings ",
+                Style::default().fg(Color::Magenta),
+            )));
+        f.render_widget(block, popup);
     }
 
     fn draw_log(&self, f: &mut ratatui::Frame, area: Rect) {
@@ -524,7 +621,49 @@ async fn run_loop(
                             }
                         }
                         KeyCode::Enter => {
-                            handle_select(app, &warden, event_tx_clone.clone()).await;
+                            if app.settings_open {
+                                // Cycle value of the highlighted setting.
+                                match app.settings_idx {
+                                    0 => {
+                                        // tier: cycle through all four
+                                        let cur = app.settings_tier_override
+                                            .unwrap_or(app.hardware_tier);
+                                        let next = match cur {
+                                            warden_core::HardwareTier::Low => warden_core::HardwareTier::Mid,
+                                            warden_core::HardwareTier::Mid => warden_core::HardwareTier::High,
+                                            warden_core::HardwareTier::High => warden_core::HardwareTier::Ultra,
+                                            warden_core::HardwareTier::Ultra => warden_core::HardwareTier::Low,
+                                        };
+                                        app.settings_tier_override = Some(next);
+                                        app.hardware_tier = next;
+                                        app.push_log(format!("tier override → {}", next.label()));
+                                    }
+                                    1 => {
+                                        // max attempts: cycle 100, 500, 2000, 5000
+                                        app.settings_max_attempts = match app.settings_max_attempts {
+                                            x if x <= 100 => 500,
+                                            x if x <= 500 => 2000,
+                                            x if x <= 2000 => 5000,
+                                            _ => 100,
+                                        };
+                                        app.push_log(format!(
+                                            "max attempts → {}",
+                                            app.settings_max_attempts
+                                        ));
+                                    }
+                                    2 => {
+                                        app.settings_aggressive_rotation =
+                                            !app.settings_aggressive_rotation;
+                                        app.push_log(format!(
+                                            "aggressive rotation: {}",
+                                            if app.settings_aggressive_rotation { "ON" } else { "OFF" }
+                                        ));
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                handle_select(app, &warden, event_tx_clone.clone()).await;
+                            }
                         }
                         KeyCode::Char('d') => {
                             if app.connected {
@@ -555,6 +694,27 @@ async fn run_loop(
                                 "watchdog: OFF"
                             });
                         }
+                        KeyCode::Char('S') => {
+                            // capital S → run speed test from hotkey
+                            let tx = event_tx_clone.clone();
+                            tokio::spawn(async move {
+                                speed_test_bg(tx).await;
+                            });
+                            app.push_log("speed test started...");
+                        }
+                        KeyCode::Left => {
+                            if app.settings_open {
+                                app.settings_idx = app.settings_idx.saturating_sub(1);
+                            }
+                        }
+                        KeyCode::Right => {
+                            if app.settings_open {
+                                let max = 3; // tier, max_attempts, aggressive
+                                if app.settings_idx < max {
+                                    app.settings_idx += 1;
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -584,6 +744,7 @@ enum UiEvent {
     ConnectFailed(String),
     Disconnected,
     UpdateResult(String),
+    SpeedResult(f64),
 }
 
 fn apply_ui_event(app: &mut App, ev: UiEvent) {
@@ -619,6 +780,10 @@ fn apply_ui_event(app: &mut App, ev: UiEvent) {
             app.server_port = 0;
         }
         UiEvent::UpdateResult(s) => app.push_log(s),
+        UiEvent::SpeedResult(mbps) => {
+            app.measured_mbps = mbps;
+            app.push_log(format!("measured bandwidth: {:.1} Mbps", mbps));
+        }
     }
 }
 
@@ -693,11 +858,61 @@ async fn handle_select(
                 "watchdog: OFF"
             });
         }
+        MenuItem::SpeedTest => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                speed_test_bg(tx).await;
+            });
+            app.push_log("speed test started...");
+        }
+        MenuItem::Settings => {
+            app.settings_open = !app.settings_open;
+            if app.settings_open {
+                app.state = AppState::Settings;
+                app.status_message = "settings open — left/right to change, esc to close".into();
+            } else {
+                app.state = AppState::Menu;
+                app.status_message = "settings closed".into();
+            }
+        }
         MenuItem::Quit => {
             app.push_log("bye");
             std::process::exit(0);
         }
     }
+}
+
+async fn speed_test_bg(tx: tokio::sync::mpsc::UnboundedSender<UiEvent>) {
+    use warden_core::speed_test::{measure, SpeedTestConfig};
+    let _ = tx.send(UiEvent::Log("━━━ speed test ━━━".into()));
+    let cfg = SpeedTestConfig {
+        target_bytes: 5 * 1024 * 1024, // 5 MB
+        samples: 3,
+        streams: 4,
+        warmup_ms: 500,
+        ..Default::default()
+    };
+    let _ = tx.send(UiEvent::Log(format!(
+        "downloading 5MB × {} streams × {} samples from CDNs...",
+        cfg.streams, cfg.samples
+    )));
+    let start = Instant::now();
+    if let Some(s) = measure(&cfg).await {
+        let _ = tx.send(UiEvent::Log(format!(
+            "✓ speed test: {:.1} Mbps ({} MB in {}ms, source={})",
+            s.mbps,
+            s.bytes as f64 / 1_000_000.0,
+            s.elapsed_ms,
+            s.source
+        )));
+        let _ = tx.send(UiEvent::SpeedResult(s.mbps));
+    } else {
+        let _ = tx.send(UiEvent::Log("✗ speed test: all CDNs unreachable".into()));
+    }
+    let _ = tx.send(UiEvent::Log(format!(
+        "total time: {}ms",
+        start.elapsed().as_millis()
+    )));
 }
 
 async fn run_connect_bg(

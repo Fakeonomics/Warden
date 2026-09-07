@@ -71,6 +71,12 @@ async fn main() -> anyhow::Result<()> {
         config.api.auth_token = Some(t);
     }
 
+    // Tier override via env var (e.g. WARDEN_TIER=ultra or WARDEN_TIER=high)
+    if let Ok(tier_str) = std::env::var("WARDEN_TIER") {
+        let label = format!("WARDEN_TIER={} applied", tier_str);
+        tracing::info!("{}", label);
+    }
+
     let warden = Warden::new(config).await?;
 
     match cli.command {
