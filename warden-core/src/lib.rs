@@ -329,6 +329,44 @@ impl Warden {
         Ok(primary)
     }
 
+    /// Connect to a specific known-good config. Skips the discovery/probe
+    /// pipeline and goes straight to the protocol manager.
+    pub async fn connect_to_config(
+        &self,
+        config: ServerConfig,
+    ) -> Result<ActiveConnection, WardenError> {
+        let cfg = self.config.read().await.clone();
+        let opsec = self.opsec.read().await;
+        let operator = opsec.mode().is_operator();
+        drop(opsec);
+
+        let mut cfg_copy = config;
+        cfg_copy.is_alive = true;
+        let conn_opt = self
+            .protocols
+            .try_connect(
+                &cfg.rotation.prefer_regions,
+                &cfg.rotation.exclude_countries,
+                operator,
+                &[cfg_copy.clone()],
+                cfg.performance_mode.clone(),
+            )
+            .await?;
+
+        let conn = conn_opt.ok_or(WardenError::AllConnectionsFailed)?;
+        let mut active = self.active.write().await;
+        active.retain(|c| !(c.host == conn.host && c.port == conn.port));
+        active.push(conn.clone());
+        info!(
+            "connect_to_config: {}:{} via {} sid={}",
+            conn.host,
+            conn.port,
+            conn.protocol,
+            &conn.session_id[..8]
+        );
+        Ok(conn)
+    }
+
     pub async fn disconnect(&self) -> Result<(), WardenError> {
         // Snapshot and clear active connections first so a failed individual
         // tunnel teardown can never leave stale entries behind.

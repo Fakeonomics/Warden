@@ -813,14 +813,14 @@ async fn run_connect_bg(
     }
     let mut alive_probed: u64 = 0;
     let mut total_done: u64 = 0;
-    let mut first_alive_cfg: Option<warden_core::api::ServerConfig> = None;
+    let mut tcp_alive: Vec<warden_core::api::ServerConfig> = Vec::new();
     while let Some(res) = probe_set.join_next().await {
         total_done += 1;
         if let Ok((idx, ok, _ms)) = res {
             if ok {
                 alive_probed += 1;
-                if first_alive_cfg.is_none() {
-                    first_alive_cfg = configs.get(idx).cloned();
+                if let Some(c) = configs.get(idx).cloned() {
+                    tcp_alive.push(c);
                 }
             }
         }
@@ -828,30 +828,121 @@ async fn run_connect_bg(
             let _ = tx.send(UiEvent::Alive(alive_probed));
             let _ = tx.send(UiEvent::Tested(total_done));
             let frac = total_done as f64 / max_probes as f64;
-            let _ = tx.send(UiEvent::Progress(0.45 + frac * 0.35));
+            let _ = tx.send(UiEvent::Progress(0.45 + frac * 0.20));
         }
     }
     let _ = tx.send(UiEvent::Log(format!(
-        "TCP probe done: {}/{} reachable",
-        alive_probed, total_done
+        "TCP probe done: {}/{} reachable ({} candidates left to verify)",
+        alive_probed, total_done, tcp_alive.len()
+    )));
+
+    // Phase 2.5: HTTP probe — TCP alone is not enough. A reachable port may
+    // still serve garbage. We send a real GET /generate_204 through each
+    // surviving candidate to confirm the proxy actually serves traffic.
+    let _ = tx.send(UiEvent::Stage("tier-2.5: HTTP probe (real request)".into()));
+    let _ = tx.send(UiEvent::Log(format!(
+        "HTTP-probing {} candidates with real GET request",
+        tcp_alive.len()
+    )));
+    let http_concurrency = std::cmp::min(concurrency, 32);
+    let http_semaphore = Arc::new(tokio::sync::Semaphore::new(http_concurrency));
+    let mut http_set: tokio::task::JoinSet<(usize, bool, u128)> = tokio::task::JoinSet::new();
+    for (idx, cfg) in tcp_alive.iter().cloned().enumerate() {
+        let permit_src = http_semaphore.clone();
+        let timeout = hw.tier.per_probe_timeout();
+        http_set.spawn(async move {
+            let _p = permit_src.acquire_owned().await.ok();
+            let start = std::time::Instant::now();
+            let url = format!("http://{}:{}/generate_204", cfg.host, cfg.port);
+            let res = reqwest::Client::builder()
+                .timeout(timeout)
+                .user_agent("Mozilla/5.0 Warden/0.1")
+                .build()
+                .ok();
+            let ok = if let Some(c) = res {
+                match c.get(&url).send().await {
+                    Ok(r) => {
+                        let s = r.status().as_u16();
+                        // 2xx, 204, 301, 302 are all "the proxy speaks HTTP"
+                        s < 500
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                false
+            };
+            (idx, ok, start.elapsed().as_millis())
+        });
+    }
+    let mut http_alive: Vec<warden_core::api::ServerConfig> = Vec::new();
+    let mut http_tested: u64 = 0;
+    let mut first_alive_cfg: Option<warden_core::api::ServerConfig> = None;
+    while let Some(res) = http_set.join_next().await {
+        http_tested += 1;
+        if let Ok((idx, ok, ms)) = res {
+            if ok {
+                if let Some(c) = tcp_alive.get(idx).cloned() {
+                    if first_alive_cfg.is_none() {
+                        first_alive_cfg = Some(c.clone());
+                    }
+                    http_alive.push(c);
+                }
+            }
+            if idx == 0 || idx % 5 == 0 {
+                let _ = tx.send(UiEvent::Log(format!(
+                    "  HTTP probe {}/{}: {} ({}ms)",
+                    idx + 1,
+                    tcp_alive.len(),
+                    if ok { "OK" } else { "fail" },
+                    ms
+                )));
+            }
+        }
+        if http_tested % 5 == 0 || http_tested == tcp_alive.len() as u64 {
+            let _ = tx.send(UiEvent::Alive(http_alive.len() as u64));
+            let _ = tx.send(UiEvent::Tested(http_tested));
+            let frac = if tcp_alive.is_empty() {
+                1.0
+            } else {
+                http_tested as f64 / tcp_alive.len() as f64
+            };
+            let _ = tx.send(UiEvent::Progress(0.65 + frac * 0.25));
+        }
+    }
+    let _ = tx.send(UiEvent::Log(format!(
+        "HTTP probe done: {}/{} actually serve traffic",
+        http_alive.len(),
+        tcp_alive.len()
     )));
 
     if let Some(cfg) = first_alive_cfg.clone() {
         let _ = tx.send(UiEvent::Log(format!(
-            "✓ first alive: {}:{} via {} — opening tunnel",
+            "✓ first HTTP-alive: {}:{} via {} — opening tunnel",
             cfg.host, cfg.port, cfg.protocol
         )));
-        let _ = tx.send(UiEvent::Progress(0.9));
+        let _ = tx.send(UiEvent::Progress(0.95));
         let _ = tx.send(UiEvent::Stage("tier-3: tunnel".into()));
-        // We could call connect_from_config, but to keep the change tight
-        // we still go through warden.connect which already has retry logic.
-        let _ = tx.send(UiEvent::Log("invoking warden core…".into()));
-        let _ = tx.send(UiEvent::ConnectFailed(
-            format!("candidate ready: {}:{} ({})", cfg.host, cfg.port, cfg.protocol),
-        ));
+        match warden.connect_to_config(cfg.clone()).await {
+            Ok(conn) => {
+                let _ = tx.send(UiEvent::Progress(1.0));
+                let _ = tx.send(UiEvent::Connected(
+                    conn.protocol.clone(),
+                    conn.host.clone(),
+                    conn.port as u16,
+                ));
+                let _ = tx.send(UiEvent::Log(format!(
+                    "✓ CONNECTED via {} → {}:{}",
+                    conn.protocol, conn.host, conn.port
+                )));
+            }
+            Err(e) => {
+                let _ = tx.send(UiEvent::ConnectFailed(e.to_string()));
+                let _ = tx.send(UiEvent::Log(format!("✗ tunnel open failed: {}", e)));
+            }
+        }
     } else {
         let _ = tx.send(UiEvent::ConnectFailed(
-            "no TCP-reachable candidates in feed batch".into(),
+            "no HTTP-alive candidate (all TCP peers were inert)".into(),
         ));
     }
     let _ = tx.send(UiEvent::Progress(0.0));
