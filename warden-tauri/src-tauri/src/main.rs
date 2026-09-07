@@ -1,8 +1,9 @@
-use litcrypt2::lc;
+use litcrypt2::{lc, use_litcrypt};
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
-lc!();
+extern crate alloc;
+use_litcrypt!();
 
 mod lib;
 

@@ -1,5 +1,4 @@
-use litcrypt2::lc;
-use crate::{config::{ProtocolsConfig, OpsecConfig}, error::WardenError, api::ServerConfig};
+use crate::{config::ProtocolsConfig, error::WardenError, api::ServerConfig};
 use crate::ActiveConnection;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,21 +7,26 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use chrono::Utc;
 
-lc!();
-
 pub struct ProtocolManager {
     config: ProtocolsConfig,
+    #[allow(dead_code)]
     api: Arc<crate::api::ApiClient>,
     sessions: RwLock<HashMap<String, SessionHandle>>,
 }
 
 #[derive(Debug, Clone)]
 struct SessionHandle {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     protocol: String,
+    #[allow(dead_code)]
     host: String,
+    #[allow(dead_code)]
     port: i32,
+    #[allow(dead_code)]
     started_at: chrono::DateTime<Utc>,
+    #[allow(dead_code)]
     fingerprint: String,
 }
 
@@ -106,10 +110,251 @@ impl ProtocolManager {
 
 fn enabled_for(c: &ProtocolsConfig, p: &str) -> bool {
     match p {
-        s if s == "wireguard" => c.wireguard_enabled,
-        s if s == "vless" => c.vless_enabled,
-        s if s == "shadowsocks" => c.shadowsocks_enabled,
-        s if s == "hysteria2" => c.hysteria2_enabled,
+        "wireguard" => c.wireguard_enabled,
+        "vless" => c.vless_enabled,
+        "shadowsocks" => c.shadowsocks_enabled,
+        "hysteria2" => c.hysteria2_enabled,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ApiClient, ApiConfig};
+    use litcrypt2::lc;
+
+    fn make_cfg(proto: &str, region: &str, score: f64, port: i32) -> ServerConfig {
+        let host = format!("{}.example.com", region.to_lowercase());
+        let url = format!("{}://user@{}:{}/?#{}", proto, host, port, region);
+        ServerConfig {
+            id: 1,
+            config_line: url,
+            protocol: proto.to_string(),
+            host,
+            port,
+            is_alive: true,
+            source: None,
+            health_score: Some(score),
+            response_time_ms: Some(100),
+            region: Some(region.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn try_connect_picks_vless_first() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs = vec![
+            make_cfg("wireguard", "DE", 0.9, 51820),
+            make_cfg("vless", "DE", 0.9, 443),
+        ];
+        let prefer: Vec<String> = vec!["DE".into()];
+        let exclude: Vec<String> = vec![];
+
+        let conn = mgr.try_connect(&prefer, &exclude, false, &configs).await.unwrap();
+        assert!(conn.is_some());
+        assert_eq!(conn.unwrap().protocol, "vless");
+    }
+
+    #[tokio::test]
+    async fn try_connect_excludes_country_civilian() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs = vec![
+            make_cfg("vless", "CN", 1.0, 443),
+            make_cfg("vless", "DE", 0.8, 443),
+        ];
+        let prefer: Vec<String> = vec![];
+        let exclude: Vec<String> = vec!["CN".into()];
+
+        let conn = mgr.try_connect(&prefer, &exclude, false, &configs).await.unwrap();
+        assert!(conn.is_some());
+        assert_eq!(conn.unwrap().host, "de.example.com");
+    }
+
+    #[tokio::test]
+    async fn try_connect_operator_bypasses_exclude() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs = vec![
+            make_cfg("vless", "CN", 1.0, 443),
+            make_cfg("vless", "DE", 0.8, 443),
+        ];
+        let prefer: Vec<String> = vec![];
+        let exclude: Vec<String> = vec!["CN".into()];
+
+        let conn = mgr.try_connect(&prefer, &exclude, true, &configs).await.unwrap();
+        assert!(conn.is_some());
+        // operator mode sorts by health score, CN has 1.0 > DE's 0.8
+        assert_eq!(conn.unwrap().host, "cn.example.com");
+    }
+
+    #[tokio::test]
+    async fn try_connect_no_alive_configs() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs: Vec<ServerConfig> = vec![];
+        let conn = mgr.try_connect(&[], &[], false, &configs).await.unwrap();
+        assert!(conn.is_none());
+    }
+
+    #[tokio::test]
+    async fn try_connect_dead_configs_only() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let mut dead = make_cfg("vless", "DE", 0.5, 443);
+        dead.is_alive = false;
+        let configs = vec![dead];
+
+        let conn = mgr.try_connect(&[], &[], false, &configs).await.unwrap();
+        assert!(conn.is_none());
+    }
+
+    #[tokio::test]
+    async fn try_connect_disabled_protocol_skipped() {
+        let cfg = ProtocolsConfig {
+            preferred: vec!["wireguard".into(), "vless".into()],
+            wireguard_enabled: false,
+            vless_enabled: true,
+            shadowsocks_enabled: true,
+            hysteria2_enabled: true,
+        };
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let wg = make_cfg("wireguard", "DE", 1.0, 51820);
+        let vless = make_cfg("vless", "DE", 0.8, 443);
+        let configs = vec![wg, vless];
+
+        let conn = mgr.try_connect(&[], &[], false, &configs).await.unwrap();
+        assert_eq!(conn.unwrap().protocol, "vless");
+    }
+
+    #[tokio::test]
+    async fn try_connect_prefs_preferred_region() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        // Same score, but DE is in preferred regions -> DE should rank higher
+        let configs = vec![
+            make_cfg("vless", "FR", 0.5, 443),
+            make_cfg("vless", "DE", 0.5, 443),
+        ];
+        let prefer: Vec<String> = vec!["DE".into(), "FR".into()];
+        let exclude: Vec<String> = vec![];
+
+        let conn = mgr.try_connect(&prefer, &exclude, false, &configs).await.unwrap();
+        assert_eq!(conn.unwrap().host, "de.example.com");
+    }
+
+    #[tokio::test]
+    async fn disconnect_removes_session() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs = vec![make_cfg("vless", "DE", 0.9, 443)];
+        let conn = mgr.try_connect(&[], &[], false, &configs).await.unwrap().unwrap();
+
+        assert_eq!(mgr.list().await.len(), 1);
+        mgr.disconnect(&conn.session_id).await.unwrap();
+        assert_eq!(mgr.list().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn disconnect_nonexistent_is_noop() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+        mgr.disconnect("nonexistent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_session_generates_session() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs = vec![make_cfg("vless", "DE", 0.9, 443)];
+        let conn = mgr.try_connect(&[], &[], false, &configs).await.unwrap().unwrap();
+        assert!(!conn.session_id.is_empty());
+        assert_eq!(conn.protocol, "vless");
+        assert_eq!(conn.host, "de.example.com");
+        assert_eq!(conn.port, 443);
+        assert_eq!(conn.server, "de.example.com:443");
+        assert_eq!(conn.bytes_sent, 0);
+        assert_eq!(conn.bytes_received, 0);
+    }
+
+    #[test]
+    fn enabled_for_all_protocols() {
+        let cfg = ProtocolsConfig::default();
+        assert!(enabled_for(&cfg, "wireguard"));
+        assert!(enabled_for(&cfg, "vless"));
+        assert!(enabled_for(&cfg, "shadowsocks"));
+        assert!(enabled_for(&cfg, "hysteria2"));
+    }
+
+    #[test]
+    fn enabled_for_disabled_protocol() {
+        let cfg = ProtocolsConfig {
+            preferred: vec![],
+            wireguard_enabled: false,
+            vless_enabled: true,
+            shadowsocks_enabled: false,
+            hysteria2_enabled: true,
+        };
+        assert!(!enabled_for(&cfg, "wireguard"));
+        assert!(enabled_for(&cfg, "vless"));
+        assert!(!enabled_for(&cfg, "shadowsocks"));
+        assert!(enabled_for(&cfg, "hysteria2"));
+    }
+
+    #[test]
+    fn enabled_for_unknown_protocol() {
+        let cfg = ProtocolsConfig::default();
+        assert!(!enabled_for(&cfg, "unknown"));
+        assert!(!enabled_for(&cfg, "openvpn"));
+    }
+
+    #[tokio::test]
+    async fn list_empty_when_no_sessions() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+        assert!(mgr.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connect_multiple_creates_sessions() {
+        let cfg = ProtocolsConfig::default();
+        let api = Arc::new(ApiClient::new(ApiConfig::default()).unwrap());
+        let mgr = ProtocolManager::new(cfg, api).await.unwrap();
+
+        let configs = vec![
+            make_cfg("vless", "DE", 0.9, 443),
+            make_cfg("wireguard", "US", 0.8, 51820),
+        ];
+
+        let conn1 = mgr.try_connect(&[], &[], false, &configs).await.unwrap().unwrap();
+        assert_eq!(mgr.list().await.len(), 1);
+
+        mgr.disconnect(&conn1.session_id).await.unwrap();
+        assert_eq!(mgr.list().await.len(), 0);
+
+        let _conn2 = mgr.try_connect(&[], &[], false, &configs).await.unwrap().unwrap();
+        assert_eq!(mgr.list().await.len(), 1);
     }
 }

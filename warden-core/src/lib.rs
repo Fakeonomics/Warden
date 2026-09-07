@@ -1,5 +1,6 @@
-use litcrypt2::{lc, use_litcrypt};
+use litcrypt2::use_litcrypt;
 
+extern crate alloc;
 use_litcrypt!();
 
 pub mod config;
@@ -17,8 +18,6 @@ pub use opsec::{OpsecManager, OpsecStatus};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
-
-lc!();
 
 pub struct Warden {
     pub config: Arc<RwLock<WardenConfig>>,
@@ -122,5 +121,78 @@ impl Warden {
         let mut cfg = self.config.write().await;
         cfg.mode = Mode::Civilian;
         info!("locked to civilian mode");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use litcrypt2::lc;
+
+    #[tokio::test]
+    async fn warden_new_creates_instance() {
+        let cfg = WardenConfig::default();
+        let warden = Warden::new(cfg).await;
+        assert!(warden.is_ok());
+        let warden = warden.unwrap();
+        assert_eq!(warden.config.read().await.mode, Mode::Civilian);
+    }
+
+    #[tokio::test]
+    async fn warden_status_none_initially() {
+        let warden = Warden::new(WardenConfig::default()).await.unwrap();
+        assert!(warden.status().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn warden_opsec_status_default() {
+        let warden = Warden::new(WardenConfig::default()).await.unwrap();
+        let status = warden.opsec_status().await;
+        assert!(!status.mode_operator);
+        assert!(status.enabled);
+    }
+
+    #[tokio::test]
+    async fn warden_disconnect_noop_when_no_active() {
+        let warden = Warden::new(WardenConfig::default()).await.unwrap();
+        let result = warden.disconnect().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn warden_lock_sets_civilian() {
+        let mut cfg = WardenConfig::default();
+        cfg.mode = Mode::Operator;
+        let warden = Warden::new(cfg).await.unwrap();
+        warden.lock().await;
+        assert!(!warden.opsec.read().await.mode().is_operator());
+        assert_eq!(warden.config.read().await.mode, Mode::Civilian);
+    }
+
+    #[tokio::test]
+    async fn unlock_operator_wrong_code() {
+        let warden = Warden::new(WardenConfig::default()).await.unwrap();
+        assert!(!warden.unlock_operator("wrong-code").await);
+        assert!(!warden.config.read().await.mode.is_operator());
+    }
+
+    #[tokio::test]
+    async fn unlock_operator_correct_code() {
+        let warden = Warden::new(WardenConfig::default()).await.unwrap();
+        let key = lc!("GREYHOUND-19-OPERATOR");
+        assert!(warden.unlock_operator(&key).await);
+        assert!(warden.config.read().await.mode.is_operator());
+        assert!(warden.opsec.read().await.mode().is_operator());
+    }
+
+    #[tokio::test]
+    async fn connect_returns_no_configs_when_empty_subscription() {
+        let mut cfg = WardenConfig::default();
+        cfg.api.auth_token = Some("test-token".into());
+        let warden = Warden::new(cfg).await.unwrap();
+        // This will fail because the API endpoint doesn't actually exist
+        let result = warden.connect("test-token").await;
+        // Should fail with an API error (not NoConfigs since we can't fetch)
+        assert!(result.is_err());
     }
 }

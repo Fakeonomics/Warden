@@ -1,16 +1,11 @@
 use litcrypt2::lc;
 use serde::{Deserialize, Serialize};
 
-lc!();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Mode {
+    #[default]
     Civilian,
     Operator,
-}
-
-impl Default for Mode {
-    fn default() -> Self { Mode::Civilian }
 }
 
 impl Mode {
@@ -81,10 +76,10 @@ impl Default for ProtocolsConfig {
     fn default() -> Self {
         Self {
             preferred: vec![
-                lc!("vless").into(),
-                lc!("hysteria2").into(),
-                lc!("shadowsocks").into(),
-                lc!("wireguard").into(),
+                lc!("vless"),
+                lc!("hysteria2"),
+                lc!("shadowsocks"),
+                lc!("wireguard"),
             ],
             wireguard_enabled: true,
             vless_enabled: true,
@@ -109,8 +104,8 @@ impl Default for RotationConfig {
             enabled: true,
             interval_seconds: 30,
             max_failures_before_rotate: 3,
-            prefer_regions: vec![lc!("RU").into(), lc!("DE").into(), lc!("NL").into(), lc!("US").into(), lc!("FR").into()],
-            exclude_countries: vec![lc!("CN").into(), lc!("KP").into(), lc!("IR").into()],
+            prefer_regions: vec![lc!("RU"), lc!("DE"), lc!("NL"), lc!("US"), lc!("FR")],
+            exclude_countries: vec![lc!("CN"), lc!("KP"), lc!("IR")],
         }
     }
 }
@@ -164,5 +159,216 @@ impl WardenConfig {
             return Ok(cfg);
         }
         Ok(Self::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_default_is_civilian() {
+        assert_eq!(Mode::default(), Mode::Civilian);
+        assert!(!Mode::default().is_operator());
+    }
+
+    #[test]
+    fn mode_is_operator() {
+        assert!(Mode::Operator.is_operator());
+        assert!(!Mode::Civilian.is_operator());
+    }
+
+    #[test]
+    fn mode_unlock_with_correct_code() {
+        let key = lc!("GREYHOUND-19-OPERATOR");
+        assert_eq!(Mode::unlock(&key), Mode::Operator);
+    }
+
+    #[test]
+    fn mode_unlock_with_wrong_code() {
+        assert_eq!(Mode::unlock("wrong-code"), Mode::Civilian);
+    }
+
+    #[test]
+    fn mode_unlock_with_empty_code() {
+        assert_eq!(Mode::unlock(""), Mode::Civilian);
+    }
+
+    #[test]
+    fn default_api_config() {
+        let cfg = ApiConfig::default();
+        let expected_base = lc!("https://fakeonomics.online");
+        assert_eq!(cfg.base_url, expected_base);
+        assert_eq!(cfg.timeout_seconds, 30);
+        assert!(cfg.auth_token.is_none());
+
+        let expected_ua = lc!("Warden/0.1.0");
+        assert_eq!(cfg.user_agent, expected_ua);
+    }
+
+    #[test]
+    fn default_protocols_config() {
+        let cfg = ProtocolsConfig::default();
+        assert!(cfg.wireguard_enabled);
+        assert!(cfg.vless_enabled);
+        assert!(cfg.shadowsocks_enabled);
+        assert!(cfg.hysteria2_enabled);
+        // vless should be first (highest preferred)
+        assert_eq!(cfg.preferred[0], lc!("vless"));
+        assert_eq!(cfg.preferred.len(), 4);
+    }
+
+    #[test]
+    fn default_rotation_config() {
+        let cfg = RotationConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.interval_seconds, 30);
+        assert_eq!(cfg.max_failures_before_rotate, 3);
+        assert_eq!(cfg.prefer_regions.len(), 5);
+        assert_eq!(cfg.exclude_countries.len(), 3);
+    }
+
+    #[test]
+    fn default_opsec_config() {
+        let cfg = OpsecConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.fingerprint_rotation);
+        assert!(cfg.traffic_shaping);
+        assert!(cfg.hwid_spoof);
+        assert!(cfg.kill_switch);
+        assert!(cfg.dns_leak_protection);
+        assert!(cfg.padding);
+        assert!(!cfg.auto_on_connect);
+    }
+
+    #[test]
+    fn default_warden_config() {
+        let cfg = WardenConfig::default();
+        assert_eq!(cfg.mode, Mode::Civilian);
+        assert_eq!(cfg.protocols.preferred.len(), 4);
+        assert!(cfg.rotation.enabled);
+        assert!(cfg.opsec.enabled);
+    }
+
+    #[test]
+    fn config_roundtrip_json() {
+        let cfg = WardenConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let parsed: WardenConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.mode, cfg.mode);
+        assert_eq!(parsed.api.base_url, cfg.api.base_url);
+        assert_eq!(parsed.protocols.preferred, cfg.protocols.preferred);
+        assert_eq!(parsed.rotation.interval_seconds, cfg.rotation.interval_seconds);
+    }
+
+    #[test]
+    fn load_from_file_json() {
+        let tmp = tempfile_cfg_json();
+        std::env::set_var("WARDEN_CONFIG", &tmp);
+        let cfg = WardenConfig::load().unwrap();
+        assert!(cfg.opsec.kill_switch);
+        assert_eq!(cfg.api.base_url, lc!("https://example.test"));
+        std::env::remove_var("WARDEN_CONFIG");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn load_from_file_toml() {
+        let tmp = std::env::temp_dir().join("warden_test_toml.toml");
+        let content = r#"
+[api]
+base_url = "https://toml.test"
+subscription_endpoint = "/sub/{token}/all.txt"
+health_endpoint = "/api/protocols"
+timeout_seconds = 15
+user_agent = "Warden/0.1.0"
+
+[protocols]
+preferred = ["vless", "wireguard"]
+wireguard_enabled = true
+vless_enabled = true
+shadowsocks_enabled = false
+hysteria2_enabled = false
+
+[rotation]
+enabled = true
+interval_seconds = 60
+max_failures_before_rotate = 5
+prefer_regions = ["DE", "US"]
+exclude_countries = ["CN"]
+
+[opsec]
+enabled = true
+fingerprint_rotation = false
+traffic_shaping = false
+hwid_spoof = false
+kill_switch = false
+dns_leak_protection = false
+padding = false
+
+[database]
+path = "/tmp/test.db"
+"#;
+        std::fs::write(&tmp, content).unwrap();
+        std::env::set_var("WARDEN_CONFIG", &tmp);
+        let cfg = WardenConfig::load().unwrap();
+        assert_eq!(cfg.api.base_url, "https://toml.test");
+        assert_eq!(cfg.api.timeout_seconds, 15);
+        assert!(!cfg.opsec.kill_switch);
+        assert_eq!(cfg.rotation.interval_seconds, 60);
+        assert_eq!(cfg.protocols.preferred, vec!["vless", "wireguard"]);
+        std::env::remove_var("WARDEN_CONFIG");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn load_default_when_no_config() {
+        std::env::remove_var("WARDEN_CONFIG");
+        let cfg = WardenConfig::load().unwrap();
+        assert_eq!(cfg.mode, Mode::Civilian);
+        assert_eq!(cfg.api.base_url, lc!("https://fakeonomics.online"));
+    }
+
+    fn tempfile_cfg_json() -> String {
+        let tmp = std::env::temp_dir().join("warden_test_cfg.json");
+        let content = r#"{
+    "api": {
+        "base_url": "https://example.test",
+        "subscription_endpoint": "/sub/{token}/all.txt",
+        "health_endpoint": "/api/protocols",
+        "auth_token": null,
+        "timeout_seconds": 30,
+        "user_agent": "Warden/0.1.0"
+    },
+    "protocols": {
+        "preferred": ["vless", "wireguard"],
+        "wireguard_enabled": true,
+        "vless_enabled": true,
+        "shadowsocks_enabled": true,
+        "hysteria2_enabled": true
+    },
+    "rotation": {
+        "enabled": true,
+        "interval_seconds": 30,
+        "max_failures_before_rotate": 3,
+        "prefer_regions": ["RU", "DE"],
+        "exclude_countries": ["CN", "KP"]
+    },
+    "opsec": {
+        "enabled": true,
+        "fingerprint_rotation": true,
+        "traffic_shaping": true,
+        "hwid_spoof": true,
+        "kill_switch": true,
+        "dns_leak_protection": true,
+        "padding": true,
+        "auto_on_connect": true
+    },
+    "database": {
+        "path": "/tmp/test.db"
+    }
+}"#;
+        std::fs::write(&tmp, content).unwrap();
+        tmp.to_string_lossy().to_string()
     }
 }

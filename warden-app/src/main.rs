@@ -1,4 +1,4 @@
-use warden_core::{Warden, WardenConfig, Mode};
+use warden_core::{Warden, WardenConfig};
 use std::time::Duration;
 use tracing::{info, error, warn};
 

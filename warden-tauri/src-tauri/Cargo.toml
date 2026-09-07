@@ -10,7 +10,7 @@ tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
 warden-core = { path = "../../warden-core" }
-tauri = { version = "2.0", features = ["macros"] }
+tauri = { version = "2.0", features = [] }
 litcrypt2 = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
