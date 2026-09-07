@@ -69,10 +69,7 @@ impl Warden {
         // and existing behaviour is preserved.
         let mut config = config;
         let profile = crate::calib::HardwareProfile::detect();
-        let tuned = crate::calib::AutoTuner.tune(
-            &profile,
-            &crate::calib::LiveMetrics::default(),
-        );
+        let tuned = crate::calib::AutoTuner.tune(&profile, &crate::calib::LiveMetrics::default());
         tuned.apply(&mut config);
 
         let mode = config.mode;
