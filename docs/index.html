@@ -293,23 +293,15 @@ document.getElementById('installSlider').addEventListener('input', function() {
 function show(id) {
   var panels = document.querySelectorAll('.panel');
   var wrap = document.getElementById('hero');
-  var logo = document.getElementById('logo');
-  var h1 = document.querySelector('.wrap h1');
   var backBtn = document.getElementById('backBtn');
   panels.forEach(function(p) { p.classList.remove('visible'); });
-  wrap.classList.remove('hide-text', 'shift-left', 'shift-right', 'hidden');
-  logo.classList.remove('avatar', 'blur');
-  logo.style.opacity = '';
-  logo.style.pointerEvents = '';
-  h1.classList.remove('up');
+  wrap.classList.remove('hide-text', 'hidden');
   if (backBtn) backBtn.classList.remove('show');
   var target = document.getElementById('panel-' + id);
   if (target) {
     target.classList.add('visible');
-    wrap.classList.add('hide-text', 'hidden');
+    wrap.classList.add('hidden');
     if (backBtn) backBtn.classList.add('show');
-    if (id === 'install') { logo.classList.add('blur'); }
-    if (id === 'gh') { logo.style.opacity = '0'; logo.style.pointerEvents = 'none'; }
   }
 }
 </script>
