@@ -709,9 +709,9 @@ async fn run_connect_bg(
     let _ = tx.send(UiEvent::Log("dispatching parallel feed fetch (3 sources)...".into()));
 
     let sources = vec![
-        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
         "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/v2ray.txt",
+        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
+        "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     ];
 
     let mut set: tokio::task::JoinSet<(String, usize, u64, String)> = tokio::task::JoinSet::new();
@@ -719,7 +719,7 @@ async fn run_connect_bg(
         let s = src.to_string();
         set.spawn(async move {
             let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(20))
+                .timeout(Duration::from_secs(15))
                 .user_agent("Mozilla/5.0 Warden/0.1")
                 .build()
                 .ok();
@@ -956,9 +956,9 @@ async fn parse_pool_from_text(
     // parse them inline. This keeps the wiring tight: real discovery
     // returns parsed ServerConfig entries; we hand those to the TCP probe.
     let sources = [
-        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
         "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/v2ray.txt",
+        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
+        "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     ];
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -1019,6 +1019,82 @@ async fn parse_pool_from_text(
 
 fn src_label(s: &str) -> &str {
     s.rsplit('/').next().unwrap_or(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_vless_uri() {
+        let line = "vless://e4514801-0d5a-42ba-869f-39bd605aef9e@13.39.60.245:22222?encryption=none&security=none&type=tcp#FR";
+        let cfg = parse_uri_line(line, 1).expect("must parse");
+        assert_eq!(cfg.protocol, "vless");
+        assert_eq!(cfg.host, "13.39.60.245");
+        assert_eq!(cfg.port, 22222);
+    }
+
+    #[test]
+    fn parse_trojan_uri() {
+        let line = "trojan://password@example.com:443?security=tls#US";
+        let cfg = parse_uri_line(line, 2).expect("must parse");
+        assert_eq!(cfg.protocol, "trojan");
+        assert_eq!(cfg.host, "example.com");
+        assert_eq!(cfg.port, 443);
+    }
+
+    #[test]
+    fn parse_hy2_uri() {
+        let line = "hysteria2://user:pw@1.2.3.4:22022#fast";
+        let cfg = parse_uri_line(line, 3).expect("must parse");
+        assert_eq!(cfg.protocol, "hysteria2");
+        assert_eq!(cfg.host, "1.2.3.4");
+        assert_eq!(cfg.port, 22022);
+    }
+
+    #[test]
+    fn reject_unknown_protocol() {
+        let line = "http://example.com:80";
+        assert!(parse_uri_line(line, 4).is_none());
+    }
+
+    #[test]
+    fn reject_no_port() {
+        let line = "vless://uuid@host";
+        assert!(parse_uri_line(line, 5).is_none());
+    }
+
+    #[tokio::test]
+    async fn real_feed_fetch_returns_data() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("Mozilla/5.0")
+            .build()
+            .unwrap();
+        let url = "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt";
+        let r = client.get(url).send().await.expect("must reach feed");
+        assert!(r.status().is_success(), "feed must return 2xx");
+        let body = r.text().await.unwrap();
+        let count = body.lines().filter(|l| !l.trim().is_empty()).count();
+        assert!(count > 100, "expected >100 lines, got {}", count);
+    }
+
+    #[tokio::test]
+    async fn real_feed_parsed_to_configs() {
+        let body = reqwest::get("https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt")
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let mut count = 0i64;
+        for line in body.lines() {
+            if parse_uri_line(line, count).is_some() {
+                count += 1;
+            }
+        }
+        assert!(count > 50, "expected >50 parseable configs from feed, got {}", count);
+    }
 }
 
 fn parse_uri_line(line: &str, id: i64) -> Option<warden_core::api::ServerConfig> {
