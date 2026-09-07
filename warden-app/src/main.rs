@@ -30,15 +30,41 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    print_ascii_logo();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warden=info,reqwest=warn".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
+
+    // Only print ASCII logo for non-TUI commands; TUI uses alternate screen
+    // and raw mode, so any pre-TUI stdout write shifts the layout.
+    let is_tui = matches!(cli.command, None | Some(Commands::Onboard));
+    if !is_tui {
+        print_ascii_logo();
+    }
+
+    // In TUI mode we must not print tracing logs to stdout (it corrupts the
+    // alternate screen). Forward them to a file instead.
+    if is_tui {
+        let log_path = std::env::temp_dir().join("warden-tui.log");
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "warden=info,reqwest=warn".into()),
+                )
+                .with_writer(file)
+                .with_ansi(false)
+                .try_init();
+        }
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "warden=info,reqwest=warn".into()),
+            )
+            .init();
+    }
 
     let mut config = WardenConfig::load()?;
     if let Ok(t) = std::env::var("WARDEN_TOKEN") {
