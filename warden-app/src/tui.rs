@@ -538,7 +538,12 @@ async fn run_loop(
                             }
                         }
                         KeyCode::Char('u') => {
-                            check_update(app, &warden, false, event_tx_clone.clone()).await;
+                            let tx = event_tx_clone.clone();
+                            let warden_bg = warden.clone();
+                            tokio::spawn(async move {
+                                check_update_bg(warden_bg, false, tx).await;
+                            });
+                            app.push_log("checking update...");
                         }
                         KeyCode::Char('w') => {
                             app.watchdog_enabled = !app.watchdog_enabled;
@@ -663,10 +668,20 @@ async fn handle_select(
             run_self_test(app).await;
         }
         MenuItem::Update => {
-            check_update(app, warden, false, tx.clone()).await;
+            let tx = tx.clone();
+            let warden_bg = warden.clone();
+            tokio::spawn(async move {
+                check_update_bg(warden_bg, false, tx).await;
+            });
+            app.push_log("checking update...");
         }
         MenuItem::AutoUpdate => {
-            check_update(app, warden, true, tx.clone()).await;
+            let tx = tx.clone();
+            let warden_bg = warden.clone();
+            tokio::spawn(async move {
+                check_update_bg(warden_bg, true, tx).await;
+            });
+            app.push_log("auto-update started...");
         }
         MenuItem::ToggleWatchdog => {
             app.watchdog_enabled = !app.watchdog_enabled;
@@ -1065,6 +1080,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires network; run with --ignored"]
     async fn real_feed_fetch_returns_data() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
@@ -1080,6 +1096,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires network; run with --ignored"]
     async fn real_feed_parsed_to_configs() {
         let body = reqwest::get("https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt")
             .await
@@ -1095,6 +1112,88 @@ mod tests {
         }
         assert!(count > 50, "expected >50 parseable configs from feed, got {}", count);
     }
+
+    #[test]
+    fn parse_wireguard_uri() {
+        // wireguard://base64pubkey:host:port — only the LAST two : segments
+        // are the host and port; everything before the second-to-last colon
+        // is the (base64-encoded) public key.
+        let line = "wireguard://aGVsbG8=:peer.example.com:51820#wg";
+        let cfg = parse_uri_line(line, 1).unwrap();
+        assert_eq!(cfg.protocol, "wireguard");
+        assert_eq!(cfg.host, "peer.example.com");
+        assert_eq!(cfg.port, 51820);
+    }
+
+    #[test]
+    fn parse_ss_uri_with_auth() {
+        let line = "ss://user:pass@1.2.3.4:8388#fast";
+        let cfg = parse_uri_line(line, 1).unwrap();
+        assert_eq!(cfg.protocol, "ss");
+        assert_eq!(cfg.host, "1.2.3.4");
+        assert_eq!(cfg.port, 8388);
+    }
+
+    #[test]
+    fn parse_query_and_fragment_stripped() {
+        let line = "vless://uuid@host.com:443?encryption=none&security=tls&type=tcp#US-fragment";
+        let cfg = parse_uri_line(line, 1).unwrap();
+        assert_eq!(cfg.host, "host.com");
+        assert_eq!(cfg.port, 443);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_port() {
+        // port 0 is invalid
+        let line = "vless://uuid@host.com:0";
+        assert!(parse_uri_line(line, 1).is_none());
+        // port too high
+        let line = "vless://uuid@host.com:99999";
+        assert!(parse_uri_line(line, 1).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_empty_host() {
+        let line = "vless://uuid@:443";
+        assert!(parse_uri_line(line, 1).is_none());
+    }
+
+    #[test]
+    fn parse_case_insensitive_protocol() {
+        let line = "VLESS://uuid@host:443";
+        let cfg = parse_uri_line(line, 1).unwrap();
+        assert_eq!(cfg.protocol, "vless");
+    }
+
+    #[test]
+    fn human_bytes_formats_correctly() {
+        assert_eq!(human_bytes(512), "512.0 B");
+        assert_eq!(human_bytes(2048), "2.0 KB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn human_duration_formats() {
+        assert_eq!(human_duration(30), "30s");
+        assert_eq!(human_duration(90), "1m 30s");
+        assert_eq!(human_duration(3700), "1h 1m 40s");
+    }
+
+    #[test]
+    fn spinner_wraps_around() {
+        assert_eq!(spinner(0), "⠋");
+        assert_eq!(spinner(8), "⠋"); // wraps
+        assert_eq!(spinner(2), "⠹");
+    }
+
+    #[test]
+    fn src_label_extracts_filename() {
+        assert_eq!(
+            src_label("https://example.com/path/file.txt"),
+            "file.txt"
+        );
+        assert_eq!(src_label("no_slash"), "no_slash");
+    }
 }
 
 fn parse_uri_line(line: &str, id: i64) -> Option<warden_core::api::ServerConfig> {
@@ -1107,8 +1206,24 @@ fn parse_uri_line(line: &str, id: i64) -> Option<warden_core::api::ServerConfig>
     let rest = rest.split('?').next().unwrap_or(rest);
     // Strip auth (user:pass@host:port) → keep host:port
     let after_at = rest.rsplit('@').next().unwrap_or(rest);
-    // Hostname or IP
-    let (host_port, port) = if let Some(idx) = after_at.rfind(':') {
+    // host:port — but for wireguard the format is pubkey:host:port, so we
+    // must take the last two : segments.
+    let (host_port, port) = if proto == "wireguard" || proto == "wg" {
+        // split on ':' and take last two as host:port; everything before
+        // is the public key.
+        let parts: Vec<&str> = after_at.split(':').collect();
+        if parts.len() < 2 {
+            return None;
+        }
+        let port: i32 = parts[parts.len() - 1].parse().ok()?;
+        let host = parts[parts.len() - 2].to_string();
+        if parts.len() == 2 {
+            (host, port)
+        } else {
+            // pubkey:host:port form — host is parts[len-2], pubkey is rest
+            (host, port)
+        }
+    } else if let Some(idx) = after_at.rfind(':') {
         let host = &after_at[..idx];
         let port: i32 = after_at[idx + 1..].parse().ok()?;
         (host.to_string(), port)
@@ -1172,35 +1287,36 @@ async fn run_self_test(app: &mut App) {
     app.state = AppState::Menu;
 }
 
-async fn check_update(
-    app: &mut App,
-    _warden: &StdArc<Warden>,
+async fn check_update_bg(
+    warden: StdArc<Warden>,
     auto: bool,
     tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
 ) {
-    app.push_log(if auto {
-        "━━━ auto-update ━━━"
-    } else {
-        "━━━ check update ━━━"
-    });
+    let _ = tx.send(UiEvent::Log(
+        if auto { "━━━ auto-update ━━━" } else { "━━━ check update ━━━" }
+            .to_string(),
+    ));
+    let _ = tx.send(UiEvent::Log(
+        "GET https://api.github.com/repos/Fakeonomics/Warden/releases/latest".into(),
+    ));
 
-    let ua = _warden.config.read().await.api.user_agent.clone();
+    let ua = warden.config.read().await.api.user_agent.clone();
     let updater = match Updater::with_default_client(ua, "Fakeonomics/Warden".to_string()) {
         Ok(u) => u,
         Err(e) => {
-            app.push_log(format!("✗ updater init: {}", e));
-            app.state = AppState::Menu;
+            let _ = tx.send(UiEvent::Log(format!("✗ updater init: {}", e)));
             return;
         }
     };
 
-    app.push_log("GET https://api.github.com/repos/Fakeonomics/Warden/releases/latest");
-    let _ = tx.send(UiEvent::Log("checking release…".into()));
-    match updater.check().await {
-        Ok(Some(info)) => {
+    match tokio::time::timeout(Duration::from_secs(15), updater.check()).await {
+        Ok(Ok(Some(info))) => {
             let remote_v = info.version().ok();
             let local_v = warden_core::updater::local_version();
-            app.push_log(format!("local=v{} remote={:?}", local_v, remote_v));
+            let _ = tx.send(UiEvent::Log(format!(
+                "local=v{} remote={:?}",
+                local_v, remote_v
+            )));
             if let Some(remote) = &remote_v {
                 let avail = warden_core::updater::Version::parse(local_v)
                     .map(|l| l.compare(remote).is_lt())
@@ -1208,50 +1324,71 @@ async fn check_update(
                 if avail {
                     let target = warden_core::updater::current_target();
                     if let Some(asset) = info.asset_for(&target) {
-                        app.push_log(format!("asset: {} ({})", asset.name, asset.url));
-                        let remote_str = format!("{}.{}.{}", remote.major, remote.minor, remote.patch);
-                        app.update_available = Some(remote_str.clone());
-
+                        let _ = tx.send(UiEvent::Log(format!(
+                            "asset: {} ({})",
+                            asset.name, asset.url
+                        )));
+                        let remote_str =
+                            format!("{}.{}.{}", remote.major, remote.minor, remote.patch);
+                        let _ = tx.send(UiEvent::UpdateResult(remote_str.clone()));
                         if auto {
-                            app.push_log("auto-update: downloading…");
+                            let _ = tx.send(UiEvent::Log("auto-update: downloading…".into()));
                             match updater.download_asset(asset).await {
                                 Ok(bytes) => {
-                                    app.push_log(format!("downloaded {} bytes", bytes.len()));
-                                    app.push_log("installing…");
+                                    let _ = tx.send(UiEvent::Log(format!(
+                                        "downloaded {} bytes",
+                                        bytes.len()
+                                    )));
+                                    let _ = tx.send(UiEvent::Log("installing…".into()));
                                     match updater.install(&bytes).await {
                                         Ok(()) => {
-                                            app.push_log("✓ installed — restart to apply");
-                                            app.auto_update = true;
+                                            let _ = tx.send(UiEvent::Log(
+                                                "✓ installed — restart to apply".into(),
+                                            ));
                                         }
-                                        Err(e) => app.push_log(format!("✗ install: {}", e)),
+                                        Err(e) => {
+                                            let _ = tx.send(UiEvent::Log(format!(
+                                                "✗ install: {}",
+                                                e
+                                            )));
+                                        }
                                     }
                                 }
-                                Err(e) => app.push_log(format!("✗ download: {}", e)),
+                                Err(e) => {
+                                    let _ =
+                                        tx.send(UiEvent::Log(format!("✗ download: {}", e)));
+                                }
                             }
                         } else {
-                            app.push_log("update available — use 'auto-update' menu to install");
-                            app.status_message = format!("update available: v{}", remote_str);
+                            let _ = tx.send(UiEvent::Log(
+                                "update available — use 'auto-update' menu to install".into(),
+                            ));
                         }
                     } else {
-                        app.push_log(format!("no asset for target {}", target));
+                        let _ = tx.send(UiEvent::Log(format!(
+                            "no asset for target {}",
+                            target
+                        )));
                     }
                 } else {
-                    app.push_log("up to date");
-                    app.status_message = "up to date".into();
+                    let _ = tx.send(UiEvent::Log("up to date".into()));
                 }
             } else {
-                app.push_log("no version info in release");
+                let _ = tx.send(UiEvent::Log("no version info in release".into()));
             }
         }
-        Ok(None) => {
-            app.push_log("no release available (rate-limited or none published)");
-            app.status_message = "no release available".into();
+        Ok(Ok(None)) => {
+            let _ = tx.send(UiEvent::Log(
+                "no release available (rate-limited or none published)".into(),
+            ));
         }
-        Err(e) => {
-            app.push_log(format!("✗ check failed: {}", e));
+        Ok(Err(e)) => {
+            let _ = tx.send(UiEvent::Log(format!("✗ check failed: {}", e)));
+        }
+        Err(_) => {
+            let _ = tx.send(UiEvent::Log("✗ check timed out after 15s".into()));
         }
     }
-    app.state = AppState::Menu;
 }
 
 pub fn run_simple_animation() {
