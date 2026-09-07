@@ -3,18 +3,20 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 use warden_core::{Updater, Warden, WardenConfig};
 
+mod tui;
+
 #[derive(Parser)]
 #[command(name = "warden")]
 #[command(about = "Warden VPN CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     Connect {
-        token: String,
+        token: Option<String>,
     },
     Disconnect,
     Status,
@@ -23,6 +25,7 @@ enum Commands {
         #[arg(long, short)]
         check: bool,
     },
+    Onboard,
 }
 
 #[tokio::main]
@@ -38,14 +41,29 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let mut config = WardenConfig::load()?;
-    config.api.auth_token = std::env::var("WARDEN_TOKEN").ok();
+    if let Ok(t) = std::env::var("WARDEN_TOKEN") {
+        config.api.auth_token = Some(t);
+    }
 
     let warden = Warden::new(config).await?;
 
     match cli.command {
-        Commands::Connect { token } => {
+        None | Some(Commands::Onboard) => {
+            tui::run_tui_mode(warden).await?;
+            return Ok(());
+        }
+        Some(Commands::Connect { token }) => {
+            let t = token
+                .or_else(|| {
+                    dialoguer::Input::new()
+                        .with_prompt("subscription token (Enter to use discovery only)")
+                        .allow_empty(true)
+                        .interact_text()
+                        .ok()
+                })
+                .unwrap_or_default();
             info!("warden booting mode={:?}", warden.config.read().await.mode);
-            match warden.connect(&token).await {
+            match warden.connect(&t).await {
                 Ok(conn) => {
                     info!(
                         "CONNECTED via {} -> {}:{} (sid:{})",
@@ -80,14 +98,13 @@ async fn main() -> anyhow::Result<()> {
                         ))
                         .await;
 
-                        // Unnoticeable rotation: rotate connections without disconnecting user fully
                         let all_active = warden.status_all().await;
                         if !all_active.is_empty() && warden.config.read().await.rotation.enabled {
                             info!(
                                 "rotation triggered ({} active connections)",
                                 all_active.len()
                             );
-                            if let Err(e) = warden.rotate(&token).await {
+                            if let Err(e) = warden.rotate(&t).await {
                                 warn!("rotation failed: {:?}", e);
                             } else {
                                 info!("rotation completed successfully");
@@ -104,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
                             );
                         } else {
                             info!("session lost - reconnecting");
-                            if let Err(e) = warden.connect(&token).await {
+                            if let Err(e) = warden.connect(&t).await {
                                 error!("reconnect failed: {:?}", e);
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                             }
@@ -118,11 +135,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Disconnect => {
+        Some(Commands::Disconnect) => {
             warden.disconnect().await?;
             println!("Disconnected");
         }
-        Commands::Status => match warden.status().await {
+        Some(Commands::Status) => match warden.status().await {
             Some(s) => println!(
                 "{} via {}:{} (sid:{})",
                 s.protocol,
@@ -132,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
             ),
             None => println!("Not connected"),
         },
-        Commands::SelfTest => {
+        Some(Commands::SelfTest) => {
             let report = warden_core::run_self_test().await?;
             println!(
                 "ternary={} decision={:?} opsec_persist={} tunnel_proof={:?}",
@@ -148,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Update { check } => {
+        Some(Commands::Update { check }) => {
             let ua = warden.config.read().await.api.user_agent.clone();
             let updater = Updater::with_default_client(ua, "Fakeonomics/Warden".to_string())?;
 

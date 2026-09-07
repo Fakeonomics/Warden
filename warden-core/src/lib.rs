@@ -7,6 +7,7 @@ pub mod decision;
 pub mod discovery;
 pub mod error;
 pub mod hysteria2;
+pub mod mind;
 pub mod opsec;
 pub mod pool;
 pub mod protocol;
@@ -14,6 +15,7 @@ pub mod protocol_helpers;
 pub mod quality;
 pub mod shadowsocks;
 pub mod ternary;
+pub mod traffic_watch;
 pub mod trojan;
 pub mod tun;
 pub mod tunnel;
@@ -25,8 +27,10 @@ pub use api::{ApiClient, ServerConfig};
 pub use config::*;
 pub use discovery::{health_filter, DiscoveryEngine, DiscoverySource, SourceFormat};
 pub use error::WardenError;
+pub use mind::{BlockReason, GeoBlockSignal, Mind, Role, SubTask, TrafficWatchdog};
 pub use opsec::{OpsecManager, OpsecStatus};
 pub use protocol::ProtocolManager;
+pub use traffic_watch::{ProbeResult, ProbeTarget, TrafficMonitor};
 pub use updater::{ReleaseInfo, UpdateCheck, Updater, Version};
 
 use crate::decision::DecisionHook;
@@ -40,6 +44,8 @@ pub struct Warden {
     pub api: Arc<ApiClient>,
     pub protocols: Arc<ProtocolManager>,
     pub opsec: Arc<RwLock<OpsecManager>>,
+    pub mind: Arc<Mind>,
+    pub monitor: Arc<TrafficMonitor>,
     pub active: RwLock<Vec<ActiveConnection>>,
     pub pool: Arc<crate::pool::ConfigPool>,
 }
@@ -106,6 +112,8 @@ impl Warden {
             api,
             protocols,
             opsec,
+            mind: Arc::new(crate::mind::Mind::new(256)),
+            monitor: Arc::new(crate::traffic_watch::TrafficMonitor::new()),
             active: RwLock::new(Vec::new()),
             pool: Arc::new(crate::pool::ConfigPool::new(
                 Vec::new(),
