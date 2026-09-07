@@ -17,3 +17,4 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 indicatif = { workspace = true }
 dialoguer = { workspace = true }
+reqwest = { workspace = true }
