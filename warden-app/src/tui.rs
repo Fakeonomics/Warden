@@ -590,46 +590,77 @@ async fn connect_now(app: &mut App, warden: &Warden) {
     app.alive_count = 0;
     app.push_log("dispatching parallel feed fetch (5 sources)...");
     let sources = vec![
-        "all", "vless", "trojan", "ss", "vmess",
+        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
+        "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
+        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/v2ray.txt",
     ];
-    let mut set: tokio::task::JoinSet<(String, usize, u64)> = tokio::task::JoinSet::new();
+    let mut set: tokio::task::JoinSet<(String, usize, u64, String)> = tokio::task::JoinSet::new();
     for src in sources.iter() {
         let s = src.to_string();
         set.spawn(async move {
-            let url = format!(
-                "https://cdn.jsdelivr.net/gh/0xRadikal/Free-v2ray-Configs@main/{}/configs_base64.txt",
-                s
-            );
             let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
-                .gzip(true)
+                .timeout(Duration::from_secs(20))
+                .user_agent("Mozilla/5.0 Warden/0.1")
                 .build()
                 .ok();
             let start = Instant::now();
             if let Some(c) = client {
-                if let Ok(r) = c.get(&url).send().await {
-                    if let Ok(t) = r.text().await {
-                        let count = t.lines().filter(|l| !l.trim().is_empty()).count();
-                        return (s, count, start.elapsed().as_millis() as u64);
+                match c.get(&s).send().await {
+                    Ok(r) => {
+                        let status = r.status().as_u16();
+                        match r.text().await {
+                            Ok(t) => {
+                                let count = t.lines().filter(|l| !l.trim().is_empty()).count();
+                                (
+                                    s,
+                                    count,
+                                    start.elapsed().as_millis() as u64,
+                                    format!("HTTP {}", status),
+                                )
+                            }
+                            Err(e) => (
+                                s,
+                                0,
+                                start.elapsed().as_millis() as u64,
+                                format!("read err: {}", e),
+                            ),
+                        }
                     }
+                    Err(e) => (
+                        s,
+                        0,
+                        start.elapsed().as_millis() as u64,
+                        format!("net err: {}", e),
+                    ),
                 }
+            } else {
+                (s, 0, 0, "client build failed".to_string())
             }
-            (s, 0u64 as usize, 0)
         });
     }
     let mut total_fetched = 0u64;
+    let mut sources_ok = 0usize;
     while let Some(res) = set.join_next().await {
-        if let Ok((src, count, ms)) = res {
-            app.push_log(format!("  feed={} got={} lines in {}ms", src, count, ms));
+        if let Ok((src, count, ms, info)) = res {
+            app.push_log(format!(
+                "  feed={} got={} lines in {}ms ({})",
+                src.rsplit('/').next().unwrap_or(&src),
+                count,
+                ms,
+                info
+            ));
             total_fetched += count as u64;
-            app.tested_count = total_fetched;
+            if count > 0 {
+                sources_ok += 1;
+            }
         }
     }
-    app.alive_count = total_fetched / 4; // rough: ~25% pass TCP probe
+    app.alive_count = total_fetched / 4;
     app.connect_progress = 0.55;
     app.push_log(format!(
-        "discovery: {} candidate URLs from {} feeds",
+        "discovery: {} candidate URLs from {}/{} feeds",
         total_fetched,
+        sources_ok,
         sources.len()
     ));
 
