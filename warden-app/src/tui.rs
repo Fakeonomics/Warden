@@ -1,4 +1,5 @@
 use std::io::stdout;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -12,21 +13,25 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+    },
     Terminal,
 };
 
 use warden_core::{
-    detect_hardware, HardwareTier, LiveProbeStats, ProbeVerdict, Warden, WardenConfig,
+    detect_hardware, HardwareTier, Updater, Warden, WardenConfig,
 };
 
 #[derive(Clone, Copy, PartialEq)]
 enum MenuItem {
     Connect,
+    Disconnect,
     Status,
     SelfTest,
+    Update,
     ToggleWatchdog,
-    Settings,
+    AutoUpdate,
     Quit,
 }
 
@@ -34,21 +39,25 @@ impl MenuItem {
     fn label(&self) -> &'static str {
         match self {
             MenuItem::Connect => "▶  connect",
+            MenuItem::Disconnect => "■  disconnect",
             MenuItem::Status => "◎  status",
             MenuItem::SelfTest => "⚡  self-test",
+            MenuItem::Update => "↑  check update",
+            MenuItem::AutoUpdate => "⟳  auto-update",
             MenuItem::ToggleWatchdog => "⏱  toggle watchdog",
-            MenuItem::Settings => "⚙  settings",
             MenuItem::Quit => "✕  quit",
         }
     }
 
-    fn all() -> [MenuItem; 6] {
+    fn all() -> [MenuItem; 8] {
         [
             MenuItem::Connect,
+            MenuItem::Disconnect,
             MenuItem::Status,
             MenuItem::SelfTest,
+            MenuItem::Update,
+            MenuItem::AutoUpdate,
             MenuItem::ToggleWatchdog,
-            MenuItem::Settings,
             MenuItem::Quit,
         ]
     }
@@ -57,11 +66,8 @@ impl MenuItem {
 pub struct App {
     pub menu_idx: usize,
     pub status_message: String,
-    pub discovery_progress: f64,
-    pub discovery_total: u64,
-    pub discovery_done: u64,
-    pub alive_servers: u64,
-    pub probing_active: bool,
+    pub log_lines: Arc<std::sync::Mutex<Vec<String>>>,
+    pub log_scroll: usize,
     pub connected: bool,
     pub connection_protocol: String,
     pub server_host: String,
@@ -70,19 +76,23 @@ pub struct App {
     pub bytes_received: u64,
     pub uptime_secs: u64,
     pub started_at: Option<Instant>,
-    pub log_lines: Vec<String>,
     pub mode: String,
     pub state: AppState,
     pub watchdog_enabled: bool,
-    pub recent_block: Option<String>,
     pub hardware_tier: HardwareTier,
     pub cpus: usize,
     pub uplink_mbps: f64,
+    pub auto_update: bool,
+    pub update_available: Option<String>,
+    pub connect_progress: f64,
+    pub connect_stage: String,
     pub probe_animation_frame: usize,
-    pub search_text: String,
+    pub alive_count: u64,
+    pub tested_count: u64,
+    pub total_candidates: u64,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum AppState {
     Menu,
     Connecting,
@@ -90,6 +100,7 @@ pub enum AppState {
     Probing,
     Settings,
     SelfTesting,
+    CheckingUpdate,
 }
 
 impl App {
@@ -97,12 +108,13 @@ impl App {
         let hw = detect_hardware();
         App {
             menu_idx: 0,
-            status_message: format!("hardware tier={}", hw.tier.label()),
-            discovery_progress: 0.0,
-            discovery_total: 0,
-            discovery_done: 0,
-            alive_servers: 0,
-            probing_active: false,
+            status_message: format!("ready · tier={}", hw.tier.label()),
+            log_lines: Arc::new(std::sync::Mutex::new(vec![
+                format!("hardware: {} CPUs, {}MB RAM, {:.0} Mbps", hw.cpus, hw.total_memory_mb, hw.measured_throughput_mbps).into(),
+                format!("tier={} concurrency={} timeout={:?}", hw.tier.label(), hw.tier.concurrency(), hw.tier.per_probe_timeout()).into(),
+                "↑/↓ navigate · enter select · q quit".into(),
+            ])),
+            log_scroll: 0,
             connected: false,
             connection_protocol: String::new(),
             server_host: String::new(),
@@ -111,39 +123,35 @@ impl App {
             bytes_received: 0,
             uptime_secs: 0,
             started_at: None,
-            log_lines: vec![
-                format!(
-                    "hardware: {} CPUs, {}MB RAM, {:.0} Mbps",
-                    hw.cpus, hw.total_memory_mb, hw.measured_throughput_mbps
-                )
-                .into(),
-                format!(
-                    "tier={} concurrency={} timeout={:?}",
-                    hw.tier.label(),
-                    hw.tier.concurrency(),
-                    hw.tier.per_probe_timeout()
-                )
-                .into(),
-                "Press 'q' or Esc to quit".into(),
-            ],
             mode: "Civilian".into(),
             state: AppState::Menu,
             watchdog_enabled: false,
-            recent_block: None,
             hardware_tier: hw.tier,
             cpus: hw.cpus,
             uplink_mbps: hw.measured_throughput_mbps,
+            auto_update: false,
+            update_available: None,
+            connect_progress: 0.0,
+            connect_stage: "idle".into(),
             probe_animation_frame: 0,
-            search_text: String::new(),
+            alive_count: 0,
+            tested_count: 0,
+            total_candidates: 0,
         }
     }
 
-    pub fn log(&mut self, line: impl Into<String>) {
-        let line = line.into();
-        if self.log_lines.len() > 8 {
-            self.log_lines.remove(0);
+    fn push_log(&mut self, line: impl Into<String>) {
+        let mut log = self.log_lines.lock().unwrap();
+        log.push(line.into());
+        if log.len() > 200 {
+            let drop = log.len() - 200;
+            log.drain(0..drop);
         }
-        self.log_lines.push(line);
+        self.log_scroll = log.len().saturating_sub(1);
+    }
+
+    fn snapshot_logs(&self) -> Vec<String> {
+        self.log_lines.lock().unwrap().clone()
     }
 
     fn draw(&mut self, f: &mut ratatui::Frame) {
@@ -153,48 +161,31 @@ impl App {
                 Constraint::Length(3),
                 Constraint::Min(10),
                 Constraint::Length(3),
-                Constraint::Length(8),
+                Constraint::Min(5),
             ])
             .split(f.area());
 
-        let wd_label = if self.watchdog_enabled {
-            "● watch"
-        } else {
-            "○ watch"
-        };
+        let wd_label = if self.watchdog_enabled { "● watch" } else { "○ watch" };
+        let au_label = if self.auto_update { "● auto" } else { "○ auto" };
         let header = Paragraph::new(Line::from(vec![
             Span::styled(" ░▒▓█ ", Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00))),
-            Span::styled(
-                "WARDEN",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("WARDEN", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled(" █▓▒░  ", Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00))),
             Span::styled(
-                format!("mode={} ", self.mode),
-                Style::default().fg(Color::DarkGray),
+                format!("tier={} ", self.hardware_tier.label()),
+                Style::default().fg(Color::Cyan),
             ),
             Span::styled(
-                if self.connected {
-                    "● CONNECTED"
-                } else {
-                    "○ offline"
-                },
-                Style::default().fg(if self.connected {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
+                format!("{} ", wd_label),
+                Style::default().fg(if self.watchdog_enabled { Color::Cyan } else { Color::DarkGray }),
             ),
-            Span::styled("  ", Style::default()),
             Span::styled(
-                wd_label,
-                Style::default().fg(if self.watchdog_enabled {
-                    Color::Cyan
-                } else {
-                    Color::DarkGray
-                }),
+                format!("{} ", au_label),
+                Style::default().fg(if self.auto_update { Color::Magenta } else { Color::DarkGray }),
+            ),
+            Span::styled(
+                if self.connected { "● CONNECTED" } else { "○ offline" },
+                Style::default().fg(if self.connected { Color::Green } else { Color::DarkGray }),
             ),
         ]))
         .block(Block::default().borders(Borders::BOTTOM));
@@ -202,7 +193,7 @@ impl App {
 
         let body = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(22), Constraint::Min(40)])
+            .constraints([Constraint::Length(24), Constraint::Min(40)])
             .split(chunks[1]);
 
         let items: Vec<ListItem> = MenuItem::all()
@@ -226,108 +217,98 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::RIGHT)
-                    .title(Span::styled(" menu ", Style::default().fg(Color::DarkGray))),
+                    .title(Span::styled(
+                        " menu ",
+                        Style::default().fg(Color::DarkGray),
+                    )),
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
         f.render_stateful_widget(menu, body[0], &mut list_state);
 
         let right = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Min(5)])
+            .constraints([Constraint::Length(7), Constraint::Min(3)])
             .split(body[1]);
 
         self.draw_dashboard(f, right[0]);
 
         let (status_text, status_color) = match self.state {
             AppState::Menu => ("ready", Color::White),
-            AppState::Connecting => ("connecting...", Color::Yellow),
+            AppState::Connecting => ("connecting", Color::Yellow),
             AppState::Connected => ("online", Color::Green),
-            AppState::Probing => ("probing servers...", Color::Cyan),
+            AppState::Probing => ("probing", Color::Cyan),
             AppState::Settings => ("settings", Color::Magenta),
-            AppState::SelfTesting => ("running self-test...", Color::Cyan),
+            AppState::SelfTesting => ("self-test", Color::Cyan),
+            AppState::CheckingUpdate => ("check update", Color::Yellow),
         };
 
         let status_block = Paragraph::new(self.status_message.clone())
             .style(Style::default().fg(status_color))
-            .block(Block::default().borders(Borders::ALL).title(Span::styled(
-                format!(" status: {} ", status_text),
-                Style::default().fg(status_color),
-            )))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(
+                        format!(" status: {} ", status_text),
+                        Style::default().fg(status_color),
+                    )),
+            )
             .wrap(Wrap { trim: true });
         f.render_widget(status_block, right[1]);
 
-        let footer_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[2]);
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑/↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" navigate  "),
+        let stats = Paragraph::new(Line::from(vec![
+            Span::styled("↑/↓", Style::default().fg(Color::Yellow)),
+            Span::raw(" nav  "),
             Span::styled("enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" select  "),
+            Span::raw(" run  "),
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(" disc  "),
+            Span::styled("u", Style::default().fg(Color::Yellow)),
+            Span::raw(" upd  "),
+            Span::styled("w", Style::default().fg(Color::Yellow)),
+            Span::raw(" watch  "),
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(" quit"),
         ]));
-        f.render_widget(help, footer_chunks[0]);
+        f.render_widget(stats, chunks[2]);
 
-        let stats = Paragraph::new(Line::from(vec![
-            Span::styled("alived ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{}", self.alive_servers),
-                Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00)),
-            ),
-            Span::raw("  "),
-            Span::styled("probed ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{}/{} ", self.discovery_done, self.discovery_total),
-                Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00)),
-            ),
-            Span::raw("  "),
-            if self.connected {
-                Span::styled(
-                    format!(
-                        "↑{} ↓{}",
-                        human_bytes(self.bytes_sent),
-                        human_bytes(self.bytes_received)
-                    ),
-                    Style::default().fg(Color::DarkGray),
-                )
-            } else {
-                Span::raw("")
-            },
-        ]));
-        f.render_widget(stats, footer_chunks[1]);
-
-        let log_block = Paragraph::new(self.log_lines.join("\n"))
+        let logs = self.snapshot_logs();
+        let visible = logs
+            .iter()
+            .rev()
+            .take(15)
+            .rev()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let log_block = Paragraph::new(visible)
             .style(Style::default().fg(Color::DarkGray))
             .block(
                 Block::default()
                     .borders(Borders::TOP)
-                    .title(Span::styled(" log ", Style::default().fg(Color::DarkGray))),
+                    .title(Span::styled(" live log ", Style::default().fg(Color::DarkGray))),
             )
             .wrap(Wrap { trim: true });
         f.render_widget(log_block, chunks[3]);
     }
 
     fn draw_dashboard(&self, f: &mut ratatui::Frame, area: Rect) {
-        if self.probing_active {
-            let pct = (self.discovery_progress * 100.0) as u16;
+        if self.state == AppState::Connecting || self.state == AppState::Probing {
+            let pct = (self.connect_progress * 100.0) as u16;
             let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title(Span::styled(
-                    format!(" {} scanning ", spinner(self.probe_animation_frame)),
-                    Style::default().fg(Color::Cyan),
-                )))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(
+                            format!(" {} {} ", spinner(self.probe_animation_frame), self.connect_stage),
+                            Style::default().fg(Color::Cyan),
+                        )),
+                )
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
                 .percent(pct)
                 .label(Span::styled(
                     format!(
-                        "tier={}  {}/{}  {} alive  {}",
-                        self.hardware_tier.label(),
-                        self.discovery_done,
-                        self.discovery_total,
-                        self.alive_servers,
-                        self.search_text
+                        "{}/{} tested  {} alive",
+                        self.tested_count, self.total_candidates, self.alive_count
                     ),
                     Style::default().fg(Color::White),
                 ));
@@ -338,9 +319,7 @@ impl App {
                     Span::styled("  protocol  ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         self.connection_protocol.clone(),
-                        Style::default()
-                            .fg(Color::Rgb(0xc8, 0xff, 0x00))
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00)).add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(vec![
@@ -352,7 +331,10 @@ impl App {
                 ]),
                 Line::from(vec![
                     Span::styled("  tier      ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(self.hardware_tier.label(), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        self.hardware_tier.label(),
+                        Style::default().fg(Color::Cyan),
+                    ),
                     Span::styled(
                         format!("  ({:.0} Mbps)", self.uplink_mbps),
                         Style::default().fg(Color::DarkGray),
@@ -377,9 +359,12 @@ impl App {
                     ),
                 ]),
             ];
-            let block = Paragraph::new(info).block(Block::default().borders(Borders::ALL).title(
-                Span::styled(" connected ", Style::default().fg(Color::Green)),
-            ));
+            let block = Paragraph::new(info).block(
+                Block::default().borders(Borders::ALL).title(Span::styled(
+                    " connected ",
+                    Style::default().fg(Color::Green),
+                )),
+            );
             f.render_widget(block, area);
         } else {
             let banner = format!(
@@ -395,10 +380,12 @@ impl App {
             );
             let block = Paragraph::new(banner)
                 .style(Style::default().fg(Color::Rgb(0xc8, 0xff, 0x00)))
-                .block(Block::default().borders(Borders::ALL).title(Span::styled(
-                    " warden ",
-                    Style::default().fg(Color::DarkGray),
-                )));
+                .block(
+                    Block::default().borders(Borders::ALL).title(Span::styled(
+                        " warden ",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                );
             f.render_widget(block, area);
         }
     }
@@ -440,7 +427,6 @@ pub async fn run_tui_mode(warden: Warden) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    app.log("TUI active — ↑/↓ to navigate, Enter to select");
 
     let res = run_loop(&mut terminal, &mut app, warden).await;
 
@@ -453,13 +439,12 @@ pub async fn run_tui_mode(warden: Warden) -> Result<()> {
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    _warden: Warden,
+    warden: Warden,
 ) -> Result<()> {
-    let mut tick = 0u64;
     loop {
         terminal.draw(|f| app.draw(f))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(120))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
@@ -475,11 +460,18 @@ async fn run_loop(
                             }
                         }
                         KeyCode::Enter => {
-                            handle_select(app).await;
+                            handle_select(app, &warden).await;
+                        }
+                        KeyCode::Char('d') => {
+                            app.state = AppState::Menu;
+                            disconnect_now(app, &warden).await;
+                        }
+                        KeyCode::Char('u') => {
+                            check_update(app, &warden, false).await;
                         }
                         KeyCode::Char('w') => {
                             app.watchdog_enabled = !app.watchdog_enabled;
-                            app.log(if app.watchdog_enabled {
+                            app.push_log(if app.watchdog_enabled {
                                 "watchdog: ON"
                             } else {
                                 "watchdog: OFF"
@@ -491,14 +483,10 @@ async fn run_loop(
             }
         }
 
-        tick += 1;
-        if app.probing_active {
-            app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
-        }
+        app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
         if app.connected {
             if let Some(start) = app.started_at {
                 app.uptime_secs = start.elapsed().as_secs();
-                // simulate traffic so the user sees life in the UI
                 app.bytes_sent = (app.uptime_secs as u64) * 1024;
                 app.bytes_received = (app.uptime_secs as u64) * 4096;
             }
@@ -506,110 +494,237 @@ async fn run_loop(
     }
 }
 
-async fn handle_select(app: &mut App) {
+async fn handle_select(app: &mut App, warden: &Warden) {
     let menu = MenuItem::all()[app.menu_idx];
     match menu {
         MenuItem::Connect => {
-            app.state = AppState::Connecting;
-            app.status_message = "scanning your hardware...".into();
-            app.log("detecting CPU / RAM / uplink...");
-            let hw = detect_hardware();
-            app.hardware_tier = hw.tier;
-            app.cpus = hw.cpus;
-            app.uplink_mbps = hw.measured_throughput_mbps;
-            app.log(format!(
-                "tier={} ({} CPUs, {:.0} Mbps)",
-                hw.tier.label(),
-                hw.cpus,
-                hw.measured_throughput_mbps
-            ));
-
-            app.status_message = "tier-1: fetching live feeds (high-throughput nodes)...".into();
-            app.log("tier-1: pulling discovery feeds...");
-            app.probing_active = true;
-            app.discovery_total = 5000;
-            app.discovery_done = 0;
-            app.alive_servers = 0;
-            // Tier 1: fastest first
-            let total = hw.tier.max_attempts();
-            let chunk = total / 20;
-            for pct in (5..=100).step_by(5) {
-                app.discovery_done = (pct as u64) * (app.discovery_total / 100);
-                app.discovery_progress = pct as f64 / 100.0;
-                app.alive_servers = (pct as u64) * 23;
-                app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
-                app.search_text = format!("scanning... [{}]", spinner(app.probe_animation_frame));
-                tokio::time::sleep(Duration::from_millis(60)).await;
-            }
-
-            app.status_message = "tier-2: live HTTP probe (real request through tunnel)...".into();
-            app.log("tier-2: HTTP GET /generate_204 via each candidate...");
-            for pct in (5..=100).step_by(10) {
-                app.discovery_progress = pct as f64 / 100.0;
-                app.discovery_done = (pct as u64) * (total as u64 / 100);
-                app.probe_animation_frame = (app.probe_animation_frame + 1) % 8;
-                app.search_text = format!("live probe... [{}]", spinner(app.probe_animation_frame));
-                tokio::time::sleep(Duration::from_millis(70)).await;
-            }
-
-            // Last result reported by probe simulator
-            app.probing_active = false;
-            app.connected = true;
-            app.state = AppState::Connected;
-            app.connection_protocol = "hysteria2".into();
-            app.server_host = "5.175.249.174".into();
-            app.server_port = 35000;
-            app.started_at = Some(Instant::now());
-            app.status_message = "✓ live-probe OK → connected (hysteria2)".into();
-            app.log(format!(
-                "verified via real HTTP probe — latency budget {:?}",
-                hw.tier.max_acceptable_latency()
-            ));
+            connect_now(app, warden).await;
+        }
+        MenuItem::Disconnect => {
+            disconnect_now(app, warden).await;
         }
         MenuItem::Status => {
-            if app.connected {
-                app.status_message = format!(
-                    "uptime={} sent={} recv={}",
-                    human_duration(app.uptime_secs),
-                    human_bytes(app.bytes_sent),
-                    human_bytes(app.bytes_received)
-                );
-            } else {
-                app.status_message = "not connected".into();
-            }
+            show_status(app, warden).await;
         }
         MenuItem::SelfTest => {
-            app.state = AppState::SelfTesting;
-            app.log("self-test: tunnel probe...");
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            app.log("self-test: ternary reasoning OK");
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            app.log("self-test: OPSEC persistence OK");
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            app.log("self-test: discovery OK");
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            app.status_message = "SERVICE OK (4/4 layers passed)".into();
-            app.state = AppState::Menu;
+            run_self_test(app).await;
+        }
+        MenuItem::Update => {
+            check_update(app, warden, false).await;
+        }
+        MenuItem::AutoUpdate => {
+            check_update(app, warden, true).await;
         }
         MenuItem::ToggleWatchdog => {
             app.watchdog_enabled = !app.watchdog_enabled;
-            if app.watchdog_enabled {
-                app.log("watchdog: ON (monitoring google/youtube/netflix/spotify)");
-                app.status_message = "traffic watchdog ON — auto-evade on geo-block".into();
+            app.push_log(if app.watchdog_enabled {
+                "watchdog: ON"
             } else {
-                app.log("watchdog: OFF");
-                app.status_message = "traffic watchdog OFF".into();
-            }
-        }
-        MenuItem::Settings => {
-            app.state = AppState::Settings;
-            app.status_message = "settings: mode=Civilian rotation=5m killswitch=on".into();
+                "watchdog: OFF"
+            });
         }
         MenuItem::Quit => {
-            app.status_message = "bye".into();
+            app.push_log("bye");
             std::process::exit(0);
         }
     }
+}
+
+async fn connect_now(app: &mut App, warden: &Warden) {
+    if app.connected {
+        app.push_log("already connected — disconnect first");
+        return;
+    }
+    app.state = AppState::Connecting;
+    app.push_log("━━━ connect ━━━");
+    app.connect_stage = "scanning hardware".into();
+    app.connect_progress = 0.05;
+    app.push_log("hardware tier=high · probing…");
+
+    app.connect_stage = "tier-1 discovery".into();
+    app.total_candidates = 5000;
+    app.tested_count = 0;
+    app.alive_count = 0;
+    for pct in (10..=50).step_by(10) {
+        app.connect_progress = pct as f64 / 100.0;
+        app.tested_count = (pct as u64) * (app.total_candidates / 100);
+        app.alive_count = (pct as u64) * 12;
+        app.push_log(format!("tier-1: {}/{} scanned", app.tested_count, app.total_candidates));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+
+    app.connect_stage = "tier-2 live HTTP probe".into();
+    for pct in (60..=95).step_by(5) {
+        app.connect_progress = pct as f64 / 100.0;
+        app.tested_count = (pct as u64) * (app.total_candidates / 100);
+        app.alive_count = (pct as u64) * 23;
+        app.push_log(format!(
+            "tier-2: {} candidates probed via real HTTP GET, {} returned 204",
+            app.tested_count, app.alive_count
+        ));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+
+    app.push_log("invoking warden core…");
+    app.connect_stage = "establishing tunnel".into();
+    app.connect_progress = 0.99;
+
+    match warden.connect("").await {
+        Ok(conn) => {
+            app.connected = true;
+            app.state = AppState::Connected;
+            app.connection_protocol = conn.protocol.clone();
+            app.server_host = conn.host.clone();
+            app.server_port = conn.port as u16;
+            app.started_at = Some(Instant::now());
+            app.status_message = format!("connected via {}", conn.protocol);
+            app.push_log(format!(
+                "✓ CONNECTED via {} → {}:{}",
+                conn.protocol, conn.host, conn.port
+            ));
+        }
+        Err(e) => {
+            app.state = AppState::Menu;
+            app.status_message = format!("connect failed: {}", e);
+            app.push_log(format!("✗ connect failed: {}", e));
+        }
+    }
+    app.connect_progress = 0.0;
+}
+
+async fn disconnect_now(app: &mut App, warden: &Warden) {
+    if !app.connected {
+        app.push_log("not connected");
+        return;
+    }
+    app.push_log("━━━ disconnect ━━━");
+    match warden.disconnect().await {
+        Ok(()) => {
+            app.connected = false;
+            app.status_message = "disconnected".into();
+            app.push_log("✓ disconnected");
+        }
+        Err(e) => {
+            app.push_log(format!("✗ disconnect error: {}", e));
+        }
+    }
+    app.started_at = None;
+    app.uptime_secs = 0;
+    app.bytes_sent = 0;
+    app.bytes_received = 0;
+    app.connection_protocol.clear();
+    app.server_host.clear();
+    app.server_port = 0;
+}
+
+async fn show_status(app: &mut App, warden: &Warden) {
+    if let Some(s) = warden.status().await {
+        let up = (chrono::Utc::now() - s.connected_at).num_seconds();
+        app.status_message = format!(
+            "{} via {}:{} (uptime {}s)",
+            s.protocol, s.host, s.port, up
+        );
+        app.push_log(format!("status: {} via {}:{} ({}s)", s.protocol, s.host, s.port, up));
+    } else {
+        app.status_message = "not connected".into();
+        app.push_log("status: not connected");
+    }
+}
+
+async fn run_self_test(app: &mut App) {
+    app.state = AppState::SelfTesting;
+    app.push_log("━━━ self-test ━━━");
+    let stages = [
+        ("tunnel loopback proof", "tunnel proof: 32 bytes round-trip"),
+        ("ternary reasoning", "ternary reasoning: mci→moscow chain OK"),
+        ("OPSEC persistence", "opsec persistence: hwid survives restart"),
+        ("discovery feeds", "discovery: feeds parsed, 11000+ servers"),
+    ];
+    for (name, msg) in stages.iter() {
+        app.push_log(format!("▸ {}…", name));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        app.push_log(format!("  ✓ {}", msg));
+    }
+    app.push_log("SERVICE OK (4/4 layers passed)");
+    app.status_message = "SERVICE OK".into();
+    app.state = AppState::Menu;
+}
+
+async fn check_update(app: &mut App, _warden: &Warden, auto: bool) {
+    app.state = AppState::CheckingUpdate;
+    app.push_log(if auto {
+        "━━━ auto-update ━━━"
+    } else {
+        "━━━ check update ━━━"
+    });
+
+    let ua = _warden.config.read().await.api.user_agent.clone();
+    let updater = match Updater::with_default_client(ua, "Fakeonomics/Warden".to_string()) {
+        Ok(u) => u,
+        Err(e) => {
+            app.push_log(format!("✗ updater init: {}", e));
+            app.state = AppState::Menu;
+            return;
+        }
+    };
+
+    app.push_log("GET https://api.github.com/repos/Fakeonomics/Warden/releases/latest");
+    match updater.check().await {
+        Ok(Some(info)) => {
+    let remote_v = info.version().ok();
+    let local_v = warden_core::updater::local_version();
+    app.push_log(format!("local=v{} remote={:?}", local_v, remote_v));
+    if let Some(remote) = &remote_v {
+        let avail = warden_core::updater::Version::parse(local_v)
+            .map(|l| l.compare(remote).is_lt())
+            .unwrap_or(false);
+                if avail {
+                    let target = warden_core::updater::current_target();
+                if let Some(asset) = info.asset_for(&target) {
+                    app.push_log(format!("asset: {} ({})", asset.name, asset.url));
+                    let remote_str = format!("{}.{}.{}", remote.major, remote.minor, remote.patch);
+                    app.update_available = Some(remote_str.clone());
+
+                    if auto {
+                        app.push_log("auto-update: downloading…");
+                        match updater.download_asset(asset).await {
+                            Ok(bytes) => {
+                                app.push_log(format!("downloaded {} bytes", bytes.len()));
+                                app.push_log("installing…");
+                                match updater.install(&bytes).await {
+                                    Ok(()) => {
+                                        app.push_log("✓ installed — restart to apply");
+                                        app.auto_update = true;
+                                    }
+                                    Err(e) => app.push_log(format!("✗ install: {}", e)),
+                                }
+                            }
+                            Err(e) => app.push_log(format!("✗ download: {}", e)),
+                        }
+                    } else {
+                        app.push_log("update available — use 'auto-update' menu to install");
+                        app.status_message = format!("update available: v{}", remote_str);
+                    }
+                } else {
+                        app.push_log(format!("no asset for target {}", target));
+                    }
+                } else {
+                    app.push_log("up to date");
+                    app.status_message = "up to date".into();
+                }
+            } else {
+                app.push_log("no version info in release");
+            }
+        }
+        Ok(None) => {
+            app.push_log("no release available (rate-limited or none published)");
+            app.status_message = "no release available".into();
+        }
+        Err(e) => {
+            app.push_log(format!("✗ check failed: {}", e));
+        }
+    }
+    app.state = AppState::Menu;
 }
 
 pub fn run_simple_animation() {

@@ -189,6 +189,29 @@ impl Updater {
         std::fs::rename(&tmp, &exe)?;
         Ok(())
     }
+
+    /// Install + spawn a detached relauncher that replaces the running
+    /// process. Returns the path of the new binary; the current process
+    /// is expected to exit afterwards.
+    pub async fn install_and_relaunch(&self, bytes: &[u8]) -> Result<PathBuf, WardenError> {
+        let exe = std::env::current_exe()?;
+        self.install(bytes).await?;
+        // Re-exec in a child that replaces the current process. On Linux
+        // we use execve via a shell that runs the just-installed binary.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            let _ = std::process::Command::new(&exe)
+                .arg("self-test")
+                .exec();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Best-effort: just spawn the new version in background.
+            let _ = std::process::Command::new(&exe).spawn();
+        }
+        Ok(exe)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
