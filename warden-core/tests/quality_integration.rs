@@ -111,3 +111,19 @@ async fn warden_self_test_runs() {
     let r = warden_core::run_self_test().await.expect("self-test");
     assert!(r.service_ok, "self-test must pass");
 }
+
+#[tokio::test]
+#[ignore = "requires network; run with --ignored"]
+async fn real_speed_test_returns_mbps() {
+    use warden_core::speed_test::{measure, SpeedTestConfig};
+    let cfg = SpeedTestConfig {
+        target_bytes: 1024 * 1024,
+        samples: 1,
+        streams: 2,
+        warmup_ms: 200,
+        ..Default::default()
+    };
+    let s = measure(&cfg).await.expect("must reach a CDN");
+    assert!(s.mbps > 0.0, "expected positive Mbps, got {}", s.mbps);
+    assert!(s.bytes > 0);
+}

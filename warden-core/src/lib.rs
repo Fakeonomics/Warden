@@ -14,6 +14,7 @@ pub mod pool;
 pub mod protocol;
 pub mod protocol_helpers;
 pub mod quality;
+pub mod speed_test;
 pub mod shadowsocks;
 pub mod ternary;
 pub mod tier_probe;
